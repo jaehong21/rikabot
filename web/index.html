@@ -467,10 +467,13 @@
     removeTypingIndicator();
     finishCurrentBubble();
 
-    var prettyArgs = argsStr;
-    try {
-      prettyArgs = JSON.stringify(JSON.parse(argsStr), null, 2);
-    } catch(_) {}
+    var prettyArgs;
+    if (typeof argsStr === 'object') {
+      prettyArgs = JSON.stringify(argsStr, null, 2);
+    } else {
+      prettyArgs = argsStr;
+      try { prettyArgs = JSON.stringify(JSON.parse(argsStr), null, 2); } catch(_) {}
+    }
 
     var block = document.createElement('div');
     block.className = 'tool-block';
