@@ -17,12 +17,12 @@ async fn main() -> Result<()> {
     let config = config::AppConfig::load(None)?;
     tracing::info!(
         "Loaded config: provider={}, model={}",
-        config.provider.kind,
-        config.provider.model
+        config.provider,
+        config.model
     );
 
     // Create provider
-    let provider: Box<dyn providers::Provider> = providers::create_provider(&config.provider)?;
+    let provider: Box<dyn providers::Provider> = providers::create_provider(&config)?;
 
     // Create tool registry with default tools
     let tool_registry = tools::default_registry();
@@ -32,8 +32,8 @@ async fn main() -> Result<()> {
         provider,
         tool_registry,
         config.system_prompt.clone(),
-        config.provider.model.clone(),
-        config.provider.temperature,
+        config.model.clone(),
+        config.temperature,
     ));
 
     // Start gateway

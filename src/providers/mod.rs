@@ -1,9 +1,9 @@
+use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use anyhow::Result;
 
-pub mod openrouter;
 pub mod openai_codex;
+pub mod openrouter;
 
 /// A single message in a conversation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -14,16 +14,28 @@ pub struct ChatMessage {
 
 impl ChatMessage {
     pub fn system(content: &str) -> Self {
-        Self { role: "system".into(), content: content.into() }
+        Self {
+            role: "system".into(),
+            content: content.into(),
+        }
     }
     pub fn user(content: &str) -> Self {
-        Self { role: "user".into(), content: content.into() }
+        Self {
+            role: "user".into(),
+            content: content.into(),
+        }
     }
     pub fn assistant(content: &str) -> Self {
-        Self { role: "assistant".into(), content: content.into() }
+        Self {
+            role: "assistant".into(),
+            content: content.into(),
+        }
     }
     pub fn tool(content: &str) -> Self {
-        Self { role: "tool".into(), content: content.into() }
+        Self {
+            role: "tool".into(),
+            content: content.into(),
+        }
     }
 }
 
@@ -90,20 +102,30 @@ pub trait Provider: Send + Sync {
 }
 
 /// Create a provider instance from configuration.
-pub fn create_provider(config: &crate::config::ProviderConfig) -> Result<Box<dyn Provider>> {
-    match config.kind.as_str() {
+pub fn create_provider(config: &crate::config::AppConfig) -> Result<Box<dyn Provider>> {
+    match config.provider.as_str() {
         "openrouter" => {
-            let api_key = config.api_key.clone()
-                .ok_or_else(|| anyhow::anyhow!("OpenRouter requires api_key"))?;
+            let cfg = config.providers.openrouter.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "provider is 'openrouter' but [providers.openrouter] not configured"
+                )
+            })?;
+            let api_key = cfg.resolve_api_key()?;
             Ok(Box::new(openrouter::OpenRouterProvider::new(&api_key)))
         }
         "openai_codex" => {
-            let oauth_token = config.oauth_token.clone()
-                .ok_or_else(|| anyhow::anyhow!("OpenAI Codex requires oauth_token"))?;
-            let account_id = config.account_id.clone()
-                .ok_or_else(|| anyhow::anyhow!("OpenAI Codex requires account_id"))?;
-            Ok(Box::new(openai_codex::OpenAiCodexProvider::new(&oauth_token, &account_id)))
+            let cfg = config.providers.openai_codex.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "provider is 'openai_codex' but [providers.openai_codex] not configured"
+                )
+            })?;
+            let oauth_token = cfg.resolve_oauth_token()?;
+            let account_id = cfg.resolve_account_id()?;
+            Ok(Box::new(openai_codex::OpenAiCodexProvider::new(
+                &oauth_token,
+                &account_id,
+            )))
         }
-        other => anyhow::bail!("Unknown provider kind: {}", other),
+        other => anyhow::bail!("Unknown provider: {}", other),
     }
 }

@@ -10,19 +10,32 @@ pub struct AppConfig {
     pub port: u16,
     #[serde(default = "default_system_prompt")]
     pub system_prompt: String,
-    pub provider: ProviderConfig,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct ProviderConfig {
-    pub kind: String, // "openrouter" | "openai_codex"
     #[serde(default = "default_model")]
     pub model: String,
     #[serde(default = "default_temperature")]
     pub temperature: f64,
+    pub provider: String,
+    pub providers: ProvidersConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProvidersConfig {
+    pub openrouter: Option<OpenRouterConfig>,
+    pub openai_codex: Option<OpenAiCodexConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct OpenRouterConfig {
     pub api_key: Option<String>,
+    pub env_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct OpenAiCodexConfig {
     pub oauth_token: Option<String>,
+    pub env_key: Option<String>,
     pub account_id: Option<String>,
+    pub env_account_id: Option<String>,
 }
 
 fn default_host() -> String {
@@ -41,6 +54,45 @@ fn default_temperature() -> f64 {
     0.1
 }
 
+impl OpenRouterConfig {
+    pub fn resolve_api_key(&self) -> Result<String> {
+        if let Some(key) = &self.api_key {
+            return Ok(key.clone());
+        }
+        if let Some(env) = &self.env_key {
+            return std::env::var(env)
+                .map_err(|_| anyhow::anyhow!("env var '{}' not set for openrouter api_key", env));
+        }
+        anyhow::bail!("openrouter requires api_key or env_key")
+    }
+}
+
+impl OpenAiCodexConfig {
+    pub fn resolve_oauth_token(&self) -> Result<String> {
+        if let Some(token) = &self.oauth_token {
+            return Ok(token.clone());
+        }
+        if let Some(env) = &self.env_key {
+            return std::env::var(env).map_err(|_| {
+                anyhow::anyhow!("env var '{}' not set for openai_codex oauth_token", env)
+            });
+        }
+        anyhow::bail!("openai_codex requires oauth_token or env_key")
+    }
+
+    pub fn resolve_account_id(&self) -> Result<String> {
+        if let Some(id) = &self.account_id {
+            return Ok(id.clone());
+        }
+        if let Some(env) = &self.env_account_id {
+            return std::env::var(env).map_err(|_| {
+                anyhow::anyhow!("env var '{}' not set for openai_codex account_id", env)
+            });
+        }
+        anyhow::bail!("openai_codex requires account_id or env_account_id")
+    }
+}
+
 impl AppConfig {
     pub fn load(path: Option<&str>) -> Result<Self> {
         let config_path = path
@@ -50,19 +102,8 @@ impl AppConfig {
         let contents = std::fs::read_to_string(&config_path)
             .map_err(|e| anyhow::anyhow!("Failed to read config file {:?}: {}", config_path, e))?;
 
-        let mut config: AppConfig = toml::from_str(&contents)
+        let config: AppConfig = toml::from_str(&contents)
             .map_err(|e| anyhow::anyhow!("Failed to parse config: {}", e))?;
-
-        // Environment variable overrides
-        if let Ok(key) = std::env::var("RIKABOT_PROVIDER_API_KEY") {
-            config.provider.api_key = Some(key);
-        }
-        if let Ok(token) = std::env::var("RIKABOT_PROVIDER_OAUTH_TOKEN") {
-            config.provider.oauth_token = Some(token);
-        }
-        if let Ok(id) = std::env::var("RIKABOT_PROVIDER_ACCOUNT_ID") {
-            config.provider.account_id = Some(id);
-        }
 
         Ok(config)
     }

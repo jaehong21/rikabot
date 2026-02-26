@@ -1,14 +1,19 @@
 host = "127.0.0.1"
 port = 4728
 system_prompt = "You are Rika, a helpful personal AI assistant."
-
-[provider]
-kind = "openrouter"
-model = "moonshotai/kimi-k2.5"
 temperature = 0.1
-api_key = "xxx"
 
-# For OpenAI Codex:
-# kind = "openai_codex"
+provider = "openrouter"
+model = "moonshotai/kimi-k2.5"
+
+[providers.openrouter]
+# api_key = "xxx"
+# Or use an environment variable:
+env_key = "OPENROUTER_API_KEY"
+
+# [providers.openai_codex]
 # oauth_token = "..."
 # account_id = "..."
+# Or use environment variables:
+# env_key = "CODEX_OAUTH_TOKEN"
+# env_account_id = "CODEX_ACCOUNT_ID"
