@@ -1,0 +1,14 @@
+host = "127.0.0.1"
+port = 4728
+system_prompt = "You are Rika, a helpful personal AI assistant."
+
+[provider]
+kind = "openrouter"
+model = "moonshotai/kimi-k2.5"
+temperature = 0.1
+api_key = "xxx"
+
+# For OpenAI Codex:
+# kind = "openai_codex"
+# oauth_token = "..."
+# account_id = "..."

@@ -1,0 +1,6 @@
+[tools]
+rust = "stable"
+watchexec = "latest"
+
+[tasks."dev"]
+run = "watchexec --restart --exts rs,toml -- cargo run"
