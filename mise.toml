@@ -1,6 +1,10 @@
 [tools]
 rust = "stable"
 watchexec = "latest"
+prek = "latest"
+
+[hooks]
+postinstall = "prek install --overwrite"
 
 [tasks."dev"]
 run = "watchexec --restart --exts rs,toml -- cargo run"
