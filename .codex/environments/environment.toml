@@ -11,9 +11,9 @@ mise install
 [[actions]]
 name = "Run Dev"
 icon = "run"
-command = "mise run dev:*"
+command = "mise run 'dev:*'"
 
 [[actions]]
 name = "Run Test"
 icon = "test"
-command = "mise run test:*"
+command = "mise run 'test:*'"
