@@ -1,4 +1,5 @@
 [tools]
+bun = "1.3"
 rust = "stable"
 watchexec = "latest"
 prek = "latest"
@@ -9,11 +10,17 @@ prek install --overwrite
 mise run install:*
 '''
 
+[tasks."install:fe"]
+dir = "{{cwd}}/web"
+run = "bun install"
 [tasks."install:be"]
 run = "cargo build"
 
-[tasks."dev"]
+[tasks."dev:be"]
 run = "watchexec --restart --exts rs,toml -- cargo run"
+[tasks."dev:fe"]
+dir = "{{cwd}}/web"
+run = "watchexec --restart --exts html,css,ts,svelte -- bun run build"
 
 [tasks."test:be"]
 run = "cargo test"
