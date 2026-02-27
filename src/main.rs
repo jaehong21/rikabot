@@ -62,7 +62,7 @@ async fn main() -> Result<()> {
     ));
 
     // Start gateway
-    tracing::info!("Starting server on {}:{}", config.host, config.port);
+    tracing::info!("Starting server on http://{}:{}", config.host, config.port);
     gateway::serve(&config.host, config.port, agent).await?;
 
     Ok(())

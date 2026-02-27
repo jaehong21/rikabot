@@ -58,7 +58,7 @@ pub async fn serve(host: &str, port: u16, agent: Arc<Agent>) -> Result<()> {
 
     let addr = format!("{}:{}", host, port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    tracing::info!("Listening on {}", addr);
+    tracing::info!("Listening on http://{}", addr);
 
     axum::serve(listener, app).await?;
 
