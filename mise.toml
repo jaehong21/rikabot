@@ -4,7 +4,16 @@ watchexec = "latest"
 prek = "latest"
 
 [hooks]
-postinstall = "prek install --overwrite"
+postinstall = '''
+prek install --overwrite
+mise run install:*
+'''
+
+[tasks."install:be"]
+run = "cargo build"
 
 [tasks."dev"]
 run = "watchexec --restart --exts rs,toml -- cargo run"
+
+[tasks."test:be"]
+run = "cargo test"
