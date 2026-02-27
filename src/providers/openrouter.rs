@@ -3,6 +3,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 // ── Public provider struct ──────────────────────────────────────────────────
 
@@ -13,9 +14,15 @@ pub struct OpenRouterProvider {
 
 impl OpenRouterProvider {
     pub fn new(api_key: &str) -> Self {
+        let client = Client::builder()
+            .connect_timeout(Duration::from_secs(15))
+            .timeout(Duration::from_secs(120))
+            .build()
+            .unwrap_or_else(|_| Client::new());
+
         Self {
             api_key: api_key.to_string(),
-            client: Client::new(),
+            client,
         }
     }
 }
@@ -108,6 +115,44 @@ struct ApiUsage {
 // ── Conversion helpers ──────────────────────────────────────────────────────
 
 impl OpenRouterProvider {
+    fn parse_provider_tool_calls(value: &serde_json::Value) -> Option<Vec<ToolCall>> {
+        if let Ok(calls) = serde_json::from_value::<Vec<ToolCall>>(value.clone()) {
+            return Some(calls);
+        }
+
+        let arr = value.as_array()?;
+        let mut out = Vec::with_capacity(arr.len());
+
+        for item in arr {
+            let id = item.get("id")?.as_str()?.to_string();
+
+            // Legacy/native OpenAI tool_call shape:
+            // {"id":"...","type":"function","function":{"name":"...","arguments":"..."}}
+            if let Some(function) = item.get("function") {
+                let name = function.get("name")?.as_str()?.to_string();
+                let arguments = function.get("arguments")?.as_str()?.to_string();
+                out.push(ToolCall {
+                    id,
+                    name,
+                    arguments,
+                });
+                continue;
+            }
+
+            // Flat provider shape:
+            // {"id":"...","name":"...","arguments":"..."}
+            let name = item.get("name")?.as_str()?.to_string();
+            let arguments = item.get("arguments")?.as_str()?.to_string();
+            out.push(ToolCall {
+                id,
+                name,
+                arguments,
+            });
+        }
+
+        Some(out)
+    }
+
     /// Convert our `ToolSpec` list into the OpenAI function-calling format.
     fn convert_tools(tools: Option<&[ToolSpec]>) -> Option<Vec<ApiToolSpec>> {
         let items = tools?;
@@ -148,14 +193,21 @@ impl OpenRouterProvider {
                 // Assistant messages may contain encoded tool calls
                 if m.role == "assistant" {
                     if let Ok(value) = serde_json::from_str::<serde_json::Value>(&m.content) {
-                        // Object format: {"tool_calls": [...], "content": "..."}
-                        if let Some(tool_calls_value) = value.get("tool_calls") {
-                            if let Ok(parsed_calls) =
-                                serde_json::from_value::<Vec<ToolCall>>(tool_calls_value.clone())
+                        // Object format:
+                        // - {"tool_calls":[...],"content":"..."} (current)
+                        // - {"__tool_calls":[...],"text":"..."} (legacy)
+                        let tool_calls_value = value
+                            .get("tool_calls")
+                            .or_else(|| value.get("__tool_calls"));
+
+                        if let Some(tool_calls_value) = tool_calls_value {
+                            if let Some(parsed_calls) =
+                                Self::parse_provider_tool_calls(tool_calls_value)
                             {
                                 let api_tool_calls = Self::tool_calls_to_api(parsed_calls);
                                 let content = value
                                     .get("content")
+                                    .or_else(|| value.get("text"))
                                     .and_then(serde_json::Value::as_str)
                                     .map(ToString::to_string);
                                 return ApiMessage {
@@ -169,8 +221,7 @@ impl OpenRouterProvider {
 
                         // Array format: [{"id":"...","name":"...","arguments":"..."}]
                         if value.is_array() {
-                            if let Ok(parsed_calls) = serde_json::from_value::<Vec<ToolCall>>(value)
-                            {
+                            if let Some(parsed_calls) = Self::parse_provider_tool_calls(&value) {
                                 let api_tool_calls = Self::tool_calls_to_api(parsed_calls);
                                 return ApiMessage {
                                     role: "assistant".to_string(),
@@ -454,6 +505,39 @@ mod tests {
         assert_eq!(
             api_tool_calls[0].function.arguments,
             "{\"command\":\"ls -la\"}"
+        );
+    }
+
+    #[test]
+    fn convert_messages_parses_legacy_assistant_tool_calls_format() {
+        let content = serde_json::json!({
+            "__tool_calls": [{
+                "id": "call_legacy",
+                "type": "function",
+                "function": {
+                    "name": "filesystem_read",
+                    "arguments": "{\"path\":\"./workspace/skills/github/SKILL.md\"}"
+                }
+            }],
+            "text": "reading skill..."
+        });
+        let messages = vec![ChatMessage::assistant(&content.to_string())];
+        let converted = OpenRouterProvider::convert_messages(&messages);
+
+        assert_eq!(converted.len(), 1);
+        assert_eq!(converted[0].role, "assistant");
+        assert_eq!(converted[0].content.as_deref(), Some("reading skill..."));
+
+        let tool_calls = converted[0]
+            .tool_calls
+            .as_ref()
+            .expect("legacy tool calls should be parsed");
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(tool_calls[0].id.as_deref(), Some("call_legacy"));
+        assert_eq!(tool_calls[0].function.name, "filesystem_read");
+        assert_eq!(
+            tool_calls[0].function.arguments,
+            "{\"path\":\"./workspace/skills/github/SKILL.md\"}"
         );
     }
 

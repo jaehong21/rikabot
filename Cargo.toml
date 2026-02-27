@@ -4,17 +4,30 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+# Async runtime & utilities
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "process", "net", "sync"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
-axum = { version = "0.8", features = ["ws"] }
 futures-util = { version = "0.3", features = ["sink"] }
+async-trait = "0.1"
+
+# Web framework & HTTP
+axum = { version = "0.8", features = ["ws"] }
+tower-http = { version = "0.6", features = ["timeout"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+
+# Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-toml = "1"
-async-trait = "0.1"
+toml = "0.8"
+
+# Error handling
 anyhow = "1"
 thiserror = "2"
+
+# Logging & tracing
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+
+# Utilities
 uuid = { version = "1", features = ["v4"] }
-tower-http = { version = "0.6", features = ["timeout"] }
+glob = "0.3"
+regex = "1"

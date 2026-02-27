@@ -117,7 +117,7 @@ impl SkillsLoader {
             }
         }
 
-        // On-demand skills (have a real file path the agent can `cat`)
+        // On-demand skills (have a real file path the agent can read on demand)
         let on_demand_skills: Vec<&Skill> = skills
             .iter()
             .filter(|s| !inline_skills.iter().any(|i| i.meta.name == s.meta.name))
@@ -125,7 +125,10 @@ impl SkillsLoader {
 
         if !on_demand_skills.is_empty() {
             parts.push("\n## Available Skills\n".to_string());
-            parts.push("To use a skill, read its full instructions: `cat <path>`\n".to_string());
+            parts.push(
+                "To use a skill, read its full instructions with the filesystem tool: `filesystem_read`\n"
+                    .to_string(),
+            );
             parts.push("<skills>".to_string());
 
             for skill in &on_demand_skills {
@@ -489,6 +492,33 @@ always: true
         assert!(matches!(github.source, SkillSource::Workspace(_)));
 
         // Cleanup
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_prompt_uses_filesystem_read_instructions_for_on_demand_skills() {
+        let tmp = make_temp_skills_dir("filesystem_read_prompt");
+        let skill_dir = tmp.join("github");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            r#"---
+name: github
+description: "Custom github skill"
+always: false
+---
+
+# Custom GitHub
+"#,
+        )
+        .unwrap();
+
+        let loader = SkillsLoader::new(Some(tmp.clone()));
+        let prompt = loader.build_prompt_section();
+
+        assert!(prompt.contains("filesystem_read"));
+        assert!(!prompt.contains("cat <path>"));
+
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

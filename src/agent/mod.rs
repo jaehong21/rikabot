@@ -172,18 +172,15 @@ impl Agent {
                 .map(|tc| {
                     serde_json::json!({
                         "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.name,
-                            "arguments": tc.arguments,
-                        }
+                        "name": tc.name,
+                        "arguments": tc.arguments,
                     })
                 })
                 .collect();
 
             let assistant_content = serde_json::json!({
-                "__tool_calls": tool_calls_json,
-                "text": response.text.as_deref().unwrap_or(""),
+                "tool_calls": tool_calls_json,
+                "content": response.text.as_deref().unwrap_or(""),
             })
             .to_string();
 

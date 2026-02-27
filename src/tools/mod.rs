@@ -2,6 +2,10 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+pub mod filesystem_glob;
+pub mod filesystem_read;
+pub mod filesystem_search;
+pub mod filesystem_write;
 pub mod shell;
 
 // Re-export ToolSpec from providers (single source of truth).
@@ -85,5 +89,9 @@ impl ToolRegistry {
 pub fn default_registry() -> ToolRegistry {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(shell::ShellTool::new(30))); // 30 second timeout
+    registry.register(Box::new(filesystem_read::FilesystemReadTool::new()));
+    registry.register(Box::new(filesystem_write::FilesystemWriteTool::new()));
+    registry.register(Box::new(filesystem_glob::FilesystemGlobTool::new()));
+    registry.register(Box::new(filesystem_search::FilesystemSearchTool::new()));
     registry
 }
