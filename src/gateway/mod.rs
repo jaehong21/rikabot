@@ -44,7 +44,10 @@ fn build_router(state: AppState) -> Router {
         .route("/", get(index_handler))
         .route("/health", get(health_handler))
         .route("/ws", get(ws::ws_handler))
-        .layer(TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, std::time::Duration::from_secs(30)))
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            std::time::Duration::from_secs(30),
+        ))
         .with_state(state)
 }
 

@@ -1,9 +1,9 @@
+mod agent;
 mod config;
+mod gateway;
 mod providers;
 mod skills;
 mod tools;
-mod agent;
-mod gateway;
 
 use anyhow::Result;
 use std::path::PathBuf;

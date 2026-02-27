@@ -3,9 +3,7 @@ use std::path::PathBuf;
 
 // ── Built-in skills (embedded at compile time) ──────────────────────────────
 
-const BUILTIN_SKILLS: &[(&str, &str)] = &[
-    ("github", include_str!("../../skills/github/SKILL.md")),
-];
+const BUILTIN_SKILLS: &[(&str, &str)] = &[("github", include_str!("../../skills/github/SKILL.md"))];
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -147,9 +145,7 @@ impl SkillsLoader {
 
         if !on_demand_skills.is_empty() {
             parts.push("\n## Available Skills\n".to_string());
-            parts.push(
-                "To use a skill, read its full instructions: `cat <path>`\n".to_string(),
-            );
+            parts.push("To use a skill, read its full instructions: `cat <path>`\n".to_string());
             parts.push("<skills>".to_string());
 
             for skill in &on_demand_skills {
@@ -317,10 +313,7 @@ fn parse_yaml_array(value: &str) -> Vec<String> {
     }
 
     // Handle ["item1", "item2"] format
-    let inner = trimmed
-        .trim_start_matches('[')
-        .trim_end_matches(']')
-        .trim();
+    let inner = trimmed.trim_start_matches('[').trim_end_matches(']').trim();
     if inner.is_empty() {
         return Vec::new();
     }
@@ -479,7 +472,11 @@ Body
             );
             let (meta, body) = result.unwrap();
             assert_eq!(&meta.name, name, "Skill name mismatch for '{}'", name);
-            assert!(!meta.description.is_empty(), "Empty description for '{}'", name);
+            assert!(
+                !meta.description.is_empty(),
+                "Empty description for '{}'",
+                name
+            );
             assert!(!body.is_empty(), "Empty body for '{}'", name);
         }
     }

@@ -31,9 +31,7 @@ pub struct SkillsConfig {
 
 impl Default for SkillsConfig {
     fn default() -> Self {
-        Self {
-            enabled: true,
-        }
+        Self { enabled: true }
     }
 }
 
