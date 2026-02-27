@@ -5,11 +5,14 @@ use std::sync::Arc;
 use anyhow::Result;
 use axum::{
     http::StatusCode,
-    response::{Html, IntoResponse},
-    routing::get,
+    response::IntoResponse,
+    routing::{get, get_service},
     Router,
 };
-use tower_http::timeout::TimeoutLayer;
+use tower_http::{
+    services::{ServeDir, ServeFile},
+    timeout::TimeoutLayer,
+};
 
 use crate::agent::Agent;
 
@@ -21,16 +24,6 @@ pub struct AppState {
     pub agent: Arc<Agent>,
 }
 
-// ── Static content ──────────────────────────────────────────────────────────
-
-/// The web UI, embedded at compile time.
-const INDEX_HTML: &str = include_str!("../../web/index.html");
-
-/// Serve the web UI.
-async fn index_handler() -> Html<&'static str> {
-    Html(INDEX_HTML)
-}
-
 /// Health check endpoint.
 async fn health_handler() -> impl IntoResponse {
     (StatusCode::OK, "ok")
@@ -40,10 +33,13 @@ async fn health_handler() -> impl IntoResponse {
 
 /// Build the Axum router with all routes.
 fn build_router(state: AppState) -> Router {
+    let web_service =
+        get_service(ServeDir::new("web/dist").fallback(ServeFile::new("web/dist/index.html")));
+
     Router::new()
-        .route("/", get(index_handler))
         .route("/health", get(health_handler))
         .route("/ws", get(ws::ws_handler))
+        .fallback_service(web_service)
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
             std::time::Duration::from_secs(30),
