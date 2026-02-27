@@ -2,7 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-pub mod openai_codex;
+pub mod openai;
 pub mod openrouter;
 
 /// A single message in a conversation.
@@ -113,18 +113,13 @@ pub fn create_provider(config: &crate::config::AppConfig) -> Result<Box<dyn Prov
             let api_key = cfg.resolve_api_key()?;
             Ok(Box::new(openrouter::OpenRouterProvider::new(&api_key)))
         }
-        "openai_codex" => {
-            let cfg = config.providers.openai_codex.as_ref().ok_or_else(|| {
-                anyhow::anyhow!(
-                    "provider is 'openai_codex' but [providers.openai_codex] not configured"
-                )
+        "openai" => {
+            let cfg = config.providers.openai.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("provider is 'openai' but [providers.openai] not configured")
             })?;
-            let oauth_token = cfg.resolve_oauth_token()?;
-            let account_id = cfg.resolve_account_id()?;
-            Ok(Box::new(openai_codex::OpenAiCodexProvider::new(
-                &oauth_token,
-                &account_id,
-            )))
+            let api_key = cfg.resolve_api_key()?;
+            let base_url = cfg.resolve_base_url()?;
+            Ok(Box::new(openai::OpenAiProvider::new(&api_key, &base_url)))
         }
         other => anyhow::bail!("Unknown provider: {}", other),
     }

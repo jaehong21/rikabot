@@ -37,22 +37,21 @@ impl Default for SkillsConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProvidersConfig {
+    pub openai: Option<OpenAiConfig>,
     pub openrouter: Option<OpenRouterConfig>,
-    pub openai_codex: Option<OpenAiCodexConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct OpenAiConfig {
+    pub api_key: Option<String>,
+    pub env_key: Option<String>,
+    pub base_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct OpenRouterConfig {
     pub api_key: Option<String>,
     pub env_key: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct OpenAiCodexConfig {
-    pub oauth_token: Option<String>,
-    pub env_key: Option<String>,
-    pub account_id: Option<String>,
-    pub env_account_id: Option<String>,
 }
 
 fn default_host() -> String {
@@ -74,6 +73,45 @@ fn default_skills_enabled() -> bool {
     true
 }
 
+impl OpenAiConfig {
+    pub fn resolve_api_key(&self) -> Result<String> {
+        if let Some(key) = &self.api_key {
+            return Ok(key.clone());
+        }
+        if let Some(env) = &self.env_key {
+            return std::env::var(env)
+                .map_err(|_| anyhow::anyhow!("env var '{}' not set for openai api_key", env));
+        }
+        anyhow::bail!("openai requires api_key or env_key")
+    }
+
+    pub fn resolve_base_url(&self) -> Result<String> {
+        const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
+
+        let raw = self
+            .base_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(DEFAULT_OPENAI_BASE_URL);
+
+        let parsed = reqwest::Url::parse(raw)
+            .map_err(|_| anyhow::anyhow!("openai base_url must be a valid URL"))?;
+
+        match parsed.scheme() {
+            "http" | "https" => {}
+            _ => anyhow::bail!("openai base_url must use http or https"),
+        }
+
+        let path = parsed.path().trim_end_matches('/');
+        if path.ends_with("/chat/completions") {
+            anyhow::bail!("openai base_url must be a base URL without '/chat/completions' suffix");
+        }
+
+        Ok(raw.trim_end_matches('/').to_string())
+    }
+}
+
 impl OpenRouterConfig {
     pub fn resolve_api_key(&self) -> Result<String> {
         if let Some(key) = &self.api_key {
@@ -84,32 +122,6 @@ impl OpenRouterConfig {
                 .map_err(|_| anyhow::anyhow!("env var '{}' not set for openrouter api_key", env));
         }
         anyhow::bail!("openrouter requires api_key or env_key")
-    }
-}
-
-impl OpenAiCodexConfig {
-    pub fn resolve_oauth_token(&self) -> Result<String> {
-        if let Some(token) = &self.oauth_token {
-            return Ok(token.clone());
-        }
-        if let Some(env) = &self.env_key {
-            return std::env::var(env).map_err(|_| {
-                anyhow::anyhow!("env var '{}' not set for openai_codex oauth_token", env)
-            });
-        }
-        anyhow::bail!("openai_codex requires oauth_token or env_key")
-    }
-
-    pub fn resolve_account_id(&self) -> Result<String> {
-        if let Some(id) = &self.account_id {
-            return Ok(id.clone());
-        }
-        if let Some(env) = &self.env_account_id {
-            return std::env::var(env).map_err(|_| {
-                anyhow::anyhow!("env var '{}' not set for openai_codex account_id", env)
-            });
-        }
-        anyhow::bail!("openai_codex requires account_id or env_account_id")
     }
 }
 
@@ -126,5 +138,68 @@ impl AppConfig {
             .map_err(|e| anyhow::anyhow!("Failed to parse config: {}", e))?;
 
         Ok(config)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn openai_resolve_api_key_from_config() {
+        let cfg = OpenAiConfig {
+            api_key: Some("test-key".to_string()),
+            env_key: None,
+            base_url: None,
+        };
+        assert_eq!(cfg.resolve_api_key().unwrap(), "test-key");
+    }
+
+    #[test]
+    fn openai_resolve_api_key_from_env_key() {
+        let env_name = "RIKABOT_TEST_OPENAI_API_KEY";
+        unsafe { std::env::set_var(env_name, "env-test-key") };
+
+        let cfg = OpenAiConfig {
+            api_key: None,
+            env_key: Some(env_name.to_string()),
+            base_url: None,
+        };
+        assert_eq!(cfg.resolve_api_key().unwrap(), "env-test-key");
+        unsafe { std::env::remove_var(env_name) };
+    }
+
+    #[test]
+    fn openai_resolve_base_url_uses_default() {
+        let cfg = OpenAiConfig {
+            api_key: None,
+            env_key: None,
+            base_url: None,
+        };
+        assert_eq!(cfg.resolve_base_url().unwrap(), "https://api.openai.com/v1");
+    }
+
+    #[test]
+    fn openai_resolve_base_url_trims_trailing_slash() {
+        let cfg = OpenAiConfig {
+            api_key: None,
+            env_key: None,
+            base_url: Some("https://gateway.example.com/v1/".to_string()),
+        };
+        assert_eq!(
+            cfg.resolve_base_url().unwrap(),
+            "https://gateway.example.com/v1"
+        );
+    }
+
+    #[test]
+    fn openai_resolve_base_url_rejects_chat_completions_suffix() {
+        let cfg = OpenAiConfig {
+            api_key: None,
+            env_key: None,
+            base_url: Some("https://api.openai.com/v1/chat/completions".to_string()),
+        };
+        let err = cfg.resolve_base_url().unwrap_err().to_string();
+        assert!(err.contains("base URL without '/chat/completions'"));
     }
 }

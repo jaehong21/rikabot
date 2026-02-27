@@ -3,8 +3,8 @@
 # system_prompt = "You are Rika, a helpful personal AI assistant."
 # temperature = 0.1
 
-provider = "openrouter"
-model = "moonshotai/kimi-k2.5"
+provider = "openai"
+model = "gpt-5.3-codex-spark"
 
 workspace_dir = "./workspace"
 
@@ -13,12 +13,10 @@ workspace_dir = "./workspace"
 # Or use an environment variable:
 env_key = "OPENROUTER_API_KEY"
 
-# [providers.openai_codex]
-# oauth_token = "..."
-# account_id = "..."
-# Or use environment variables:
-# env_key = "CODEX_OAUTH_TOKEN"
-# env_account_id = "CODEX_ACCOUNT_ID"
+[providers.openai]
+# base_url = "https://api.openai.com/v1"
+base_url = "http://localhost:8317/v1"
+api_key = "xxx"
 
 # [skills]
 # enabled = true
