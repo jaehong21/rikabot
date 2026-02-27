@@ -16,6 +16,25 @@ pub struct AppConfig {
     pub temperature: f64,
     pub provider: String,
     pub providers: ProvidersConfig,
+    /// Optional path to workspace directory. Defaults to ~/.rika/workspace
+    #[serde(default)]
+    pub workspace_dir: Option<String>,
+    #[serde(default)]
+    pub skills: SkillsConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SkillsConfig {
+    #[serde(default = "default_skills_enabled")]
+    pub enabled: bool,
+}
+
+impl Default for SkillsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -52,6 +71,9 @@ fn default_model() -> String {
 }
 fn default_temperature() -> f64 {
     0.1
+}
+fn default_skills_enabled() -> bool {
+    true
 }
 
 impl OpenRouterConfig {

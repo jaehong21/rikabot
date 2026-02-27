@@ -1,10 +1,12 @@
-host = "127.0.0.1"
-port = 4728
-system_prompt = "You are Rika, a helpful personal AI assistant."
-temperature = 0.1
+# host = "127.0.0.1"
+# port = 4728
+# system_prompt = "You are Rika, a helpful personal AI assistant."
+# temperature = 0.1
 
 provider = "openrouter"
 model = "moonshotai/kimi-k2.5"
+
+workspace_dir = "./workspace"
 
 [providers.openrouter]
 # api_key = "xxx"
@@ -17,3 +19,6 @@ env_key = "OPENROUTER_API_KEY"
 # Or use environment variables:
 # env_key = "CODEX_OAUTH_TOKEN"
 # env_account_id = "CODEX_ACCOUNT_ID"
+
+# [skills]
+# enabled = true

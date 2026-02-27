@@ -84,10 +84,7 @@ impl Tool for ShellTool {
                     error: if output.status.success() {
                         None
                     } else {
-                        Some(format!(
-                            "Exit code: {}",
-                            output.status.code().unwrap_or(-1)
-                        ))
+                        Some(format!("Exit code: {}", output.status.code().unwrap_or(-1)))
                     },
                 })
             }

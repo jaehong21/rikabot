@@ -1,10 +1,12 @@
 mod config;
 mod providers;
+mod skills;
 mod tools;
 mod agent;
 mod gateway;
 
 use anyhow::Result;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
 
@@ -27,11 +29,34 @@ async fn main() -> Result<()> {
     // Create tool registry with default tools
     let tool_registry = tools::default_registry();
 
+    // Build system prompt with skills
+    let system_prompt = if config.skills.enabled {
+        let workspace_dir = config
+            .workspace_dir
+            .as_deref()
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var("HOME")
+                    .ok()
+                    .map(|h| PathBuf::from(h).join(".rika").join("workspace"))
+            });
+        let skills_dir = workspace_dir.map(|w| w.join("skills"));
+        let loader = skills::SkillsLoader::new(skills_dir);
+        let skills_section = loader.build_prompt_section();
+        if skills_section.is_empty() {
+            config.system_prompt.clone()
+        } else {
+            format!("{}\n\n---\n\n{}", config.system_prompt, skills_section)
+        }
+    } else {
+        config.system_prompt.clone()
+    };
+
     // Create agent
     let agent = Arc::new(agent::Agent::new(
         provider,
         tool_registry,
-        config.system_prompt.clone(),
+        system_prompt,
         config.model.clone(),
         config.temperature,
     ));
