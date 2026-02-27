@@ -2,6 +2,7 @@ mod agent;
 mod config;
 mod gateway;
 mod providers;
+mod session;
 mod skills;
 mod tools;
 
@@ -30,17 +31,18 @@ async fn main() -> Result<()> {
     let tool_registry = tools::default_registry();
 
     // Build system prompt with skills
+    let workspace_dir = config
+        .workspace_dir
+        .as_deref()
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .map(|h| PathBuf::from(h).join(".rika").join("workspace"))
+        });
+
     let system_prompt = if config.skills.enabled {
-        let workspace_dir = config
-            .workspace_dir
-            .as_deref()
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var("HOME")
-                    .ok()
-                    .map(|h| PathBuf::from(h).join(".rika").join("workspace"))
-            });
-        let skills_dir = workspace_dir.map(|w| w.join("skills"));
+        let skills_dir = workspace_dir.clone().map(|w| w.join("skills"));
         let loader = skills::SkillsLoader::new(skills_dir);
         let skills_section = loader.build_prompt_section();
         if skills_section.is_empty() {
@@ -61,9 +63,17 @@ async fn main() -> Result<()> {
         config.temperature,
     ));
 
+    // Create session manager
+    let workspace_dir = workspace_dir.ok_or_else(|| {
+        anyhow::anyhow!("workspace_dir could not be resolved from config or HOME")
+    })?;
+    let sessions = Arc::new(tokio::sync::Mutex::new(session::SessionManager::new(
+        &workspace_dir,
+    )?));
+
     // Start gateway
     tracing::info!("Starting server on http://{}:{}", config.host, config.port);
-    gateway::serve(&config.host, config.port, agent).await?;
+    gateway::serve(&config.host, config.port, agent, sessions).await?;
 
     Ok(())
 }

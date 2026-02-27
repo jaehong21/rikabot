@@ -3,6 +3,19 @@
 
   type ConnectionState = 'connecting' | 'connected' | 'disconnected';
 
+  type ThreadRecord = {
+    id: string;
+    display_name: string;
+    created_at: string;
+    updated_at: string;
+    message_count: number;
+  };
+
+  type HistoryMessage = {
+    role: string;
+    content: string;
+  };
+
   type MessageEntry = {
     id: string;
     kind: 'message';
@@ -30,9 +43,49 @@
     | { type: 'tool_call_start'; name?: string; args?: unknown }
     | { type: 'tool_call_result'; name?: string; output?: string; success?: boolean }
     | { type: 'done'; full_response?: string }
-    | { type: 'error'; message?: string };
+    | { type: 'error'; message?: string }
+    | {
+        type: 'thread_list';
+        current_session_id?: string;
+        sessions?: ThreadRecord[];
+      }
+    | {
+        type: 'thread_created';
+        current_session_id?: string;
+        sessions?: ThreadRecord[];
+        history?: HistoryMessage[];
+      }
+    | {
+        type: 'thread_renamed';
+        current_session_id?: string;
+        sessions?: ThreadRecord[];
+      }
+    | {
+        type: 'thread_switched';
+        session_id?: string;
+        current_session_id?: string;
+        sessions?: ThreadRecord[];
+        history?: HistoryMessage[];
+      }
+    | {
+        type: 'thread_cleared';
+        session_id?: string;
+        current_session_id?: string;
+        sessions?: ThreadRecord[];
+        history?: HistoryMessage[];
+      }
+    | {
+        type: 'thread_deleted';
+        deleted_session_id?: string;
+        current_session_id?: string;
+        sessions?: ThreadRecord[];
+        history?: HistoryMessage[];
+      };
 
   let entries: Entry[] = [];
+  let threads: ThreadRecord[] = [];
+  let currentSessionId: string | null = null;
+
   let inputValue = '';
   let isWaiting = false;
   let isTyping = false;
@@ -98,6 +151,8 @@
         clearTimeout(reconnectTimer);
         reconnectTimer = null;
       }
+
+      sendControl({ type: 'thread_list' });
     };
 
     socket.onclose = () => {
@@ -145,9 +200,163 @@
       case 'done':
         onDone(event.full_response ?? '');
         return;
+      case 'thread_list':
+        applyThreadState(event.sessions, event.current_session_id);
+        return;
+      case 'thread_created':
+      case 'thread_switched':
+      case 'thread_cleared':
+      case 'thread_deleted':
+        applyThreadState(event.sessions, event.current_session_id ?? event.session_id);
+        hydrateCurrentThread(event.history ?? []);
+        return;
+      case 'thread_renamed':
+        applyThreadState(event.sessions, event.current_session_id);
+        return;
       case 'error':
         onError(event.message ?? 'Unknown error');
     }
+  }
+
+  function applyThreadState(nextThreads?: ThreadRecord[], currentId?: string): void {
+    if (Array.isArray(nextThreads)) {
+      threads = [...nextThreads];
+    }
+    if (currentId) {
+      currentSessionId = currentId;
+    }
+  }
+
+  function hydrateCurrentThread(history: HistoryMessage[]): void {
+    entries = hydrateEntriesFromHistory(history);
+    finishCurrentBubble();
+    isTyping = false;
+    setWaiting(false);
+    scrollToBottom();
+  }
+
+  function hydrateEntriesFromHistory(history: HistoryMessage[]): Entry[] {
+    const rebuilt: Entry[] = [];
+    const toolCallIndex = new Map<string, number>();
+
+    for (const msg of history) {
+      if (msg.role === 'user') {
+        rebuilt.push({
+          id: nextId(),
+          kind: 'message',
+          role: 'user',
+          text: msg.content
+        });
+        continue;
+      }
+
+      if (msg.role === 'assistant') {
+        let parsed: { content?: unknown; tool_calls?: unknown } | null = null;
+        try {
+          const raw = JSON.parse(msg.content) as { content?: unknown; tool_calls?: unknown };
+          if (raw && typeof raw === 'object' && Array.isArray(raw.tool_calls)) {
+            parsed = raw;
+          }
+        } catch {
+          // Not structured tool-call JSON; treat as plain assistant text.
+        }
+
+        if (!parsed) {
+          rebuilt.push({
+            id: nextId(),
+            kind: 'message',
+            role: 'assistant',
+            text: msg.content
+          });
+          continue;
+        }
+
+        if (typeof parsed.content === 'string' && parsed.content.trim().length > 0) {
+          rebuilt.push({
+            id: nextId(),
+            kind: 'message',
+            role: 'assistant',
+            text: parsed.content
+          });
+        }
+
+        const toolCalls = parsed.tool_calls as Array<Record<string, unknown>>;
+        for (const call of toolCalls) {
+          const callId = typeof call.id === 'string' && call.id.trim() ? call.id : nextId();
+          const name = typeof call.name === 'string' ? call.name : 'unknown_tool';
+          const formattedArgs = formatArgs(call.arguments ?? {});
+
+          const entry: ToolEntry = {
+            id: nextId(),
+            kind: 'tool',
+            name,
+            args: formattedArgs,
+            argsPreview: makePreview(formattedArgs),
+            output: '',
+            status: 'running',
+            resolved: false,
+            open: false
+          };
+          const idx = rebuilt.push(entry) - 1;
+          toolCallIndex.set(callId, idx);
+        }
+
+        continue;
+      }
+
+      if (msg.role === 'tool') {
+        let callId = '';
+        let output = msg.content;
+
+        try {
+          const parsed = JSON.parse(msg.content) as { tool_call_id?: unknown; content?: unknown };
+          if (typeof parsed.tool_call_id === 'string') {
+            callId = parsed.tool_call_id;
+          }
+          if (typeof parsed.content === 'string') {
+            output = parsed.content;
+          }
+        } catch {
+          // Keep fallback output.
+        }
+
+        const idx = callId ? toolCallIndex.get(callId) : undefined;
+        if (idx !== undefined) {
+          const current = rebuilt[idx];
+          if (current && current.kind === 'tool') {
+            rebuilt[idx] = {
+              ...current,
+              output,
+              status: 'success',
+              resolved: true,
+              open: false
+            };
+          }
+        } else {
+          rebuilt.push({
+            id: nextId(),
+            kind: 'message',
+            role: 'assistant',
+            text: output
+          });
+        }
+      }
+    }
+
+    for (let i = 0; i < rebuilt.length; i += 1) {
+      const entry = rebuilt[i];
+      if (entry.kind === 'tool' && !entry.resolved) {
+        rebuilt[i] = {
+          ...entry,
+          resolved: true,
+          status: 'failure',
+          output: entry.output || 'No stored result found for this tool call.',
+          open: false
+        };
+      }
+    }
+
+    return rebuilt;
   }
 
   function onChunk(text: string): void {
@@ -339,9 +548,124 @@
     });
   }
 
+  function sendControl(payload: Record<string, unknown>): void {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    ws.send(JSON.stringify(payload));
+  }
+
+  function switchThread(sessionId: string): void {
+    if (sessionId === currentSessionId) {
+      return;
+    }
+    setWaiting(false);
+    isTyping = false;
+    sendControl({ type: 'thread_switch', session_id: sessionId });
+  }
+
+  function pushAssistantNote(text: string): void {
+    entries = [
+      ...entries,
+      {
+        id: nextId(),
+        kind: 'message',
+        role: 'assistant',
+        text
+      }
+    ];
+    scrollToBottom();
+  }
+
+  function handleSlashCommand(raw: string): boolean {
+    if (!raw.startsWith('/')) {
+      return false;
+    }
+
+    const body = raw.slice(1).trim();
+    if (!body) {
+      onError('Empty slash command');
+      return true;
+    }
+
+    const firstSpace = body.indexOf(' ');
+    const cmd = (firstSpace === -1 ? body : body.slice(0, firstSpace)).toLowerCase();
+    const arg = (firstSpace === -1 ? '' : body.slice(firstSpace + 1)).trim();
+
+    if (cmd === 'help') {
+      pushAssistantNote(
+        'Session commands: `/new [name]`, `/rename <name>`, `/clear`, `/delete`'
+      );
+      return true;
+    }
+
+    if (cmd === 'new') {
+      sendControl({
+        type: 'thread_create',
+        ...(arg ? { display_name: arg } : {})
+      });
+      return true;
+    }
+
+    if (cmd === 'rename') {
+      if (!currentSessionId) {
+        onError('No active session to rename');
+        return true;
+      }
+      if (!arg) {
+        onError('Usage: /rename <display name>');
+        return true;
+      }
+      sendControl({
+        type: 'thread_rename',
+        session_id: currentSessionId,
+        display_name: arg
+      });
+      return true;
+    }
+
+    if (cmd === 'clear') {
+      if (!currentSessionId) {
+        onError('No active session to clear');
+        return true;
+      }
+      if (!window.confirm('Clear this thread context?')) {
+        return true;
+      }
+      setWaiting(false);
+      isTyping = false;
+      sendControl({ type: 'thread_clear' });
+      return true;
+    }
+
+    if (cmd === 'delete') {
+      if (!currentSessionId) {
+        onError('No active session to delete');
+        return true;
+      }
+      if (!window.confirm('Delete this thread?')) {
+        return true;
+      }
+      setWaiting(false);
+      isTyping = false;
+      sendControl({ type: 'thread_delete', session_id: currentSessionId });
+      return true;
+    }
+
+    onError(`Unknown command: /${cmd}`);
+    return true;
+  }
+
   function sendMessage(): void {
     const text = inputValue.trim();
     if (!text || isWaiting || !ws || ws.readyState !== WebSocket.OPEN) {
+      return;
+    }
+
+    inputValue = '';
+    autoResize();
+
+    if (handleSlashCommand(text)) {
       return;
     }
 
@@ -352,9 +676,6 @@
       text
     };
     entries = [...entries, userEntry];
-
-    inputValue = '';
-    autoResize();
 
     ws.send(
       JSON.stringify({
@@ -427,91 +748,118 @@
     </div>
   </header>
 
-  <section class="messages" bind:this={messagesEl}>
-    {#if entries.length === 0}
-      <article class="welcome">
-        <h2>Ready when you are</h2>
-        <p>
-          Ask about your repo, run tools, and iterate quickly. Rika streams responses and shows
-          tool activity inline.
-        </p>
-      </article>
-    {/if}
-
-    {#each entries as entry (entry.id)}
-      {#if entry.kind === 'message'}
-        <article class={`msg ${entry.role} ${entry.error ? 'error' : ''}`}>
-          <div class="content">{@html renderMarkdown(entry.text)}</div>
-        </article>
-      {:else}
-        <article class="tool-block" data-status={entry.status}>
-          <button class="tool-head" type="button" on:click={() => toggleTool(entry.id)}>
-            <div class="tool-head-main">
-              <span class="tool-label">Tool</span>
-              <span class="name">{entry.name}</span>
-            </div>
-
-            <div class="tool-head-right">
-              <span class={`result ${entry.status}`}>{statusText(entry.status)}</span>
-              <span class={`caret ${entry.open ? 'open' : ''}`}>▸</span>
-            </div>
+  <div class="workspace">
+    <aside class="sidebar">
+      <p class="sidebar-label">Sessions</p>
+      <div class="thread-list" role="tablist" aria-label="Threads">
+        {#each threads as thread (thread.id)}
+          <button
+            type="button"
+            class={`thread-chip ${thread.id === currentSessionId ? 'active' : ''}`}
+            on:click={() => switchThread(thread.id)}
+            title={thread.display_name}
+          >
+            <span>{thread.display_name}</span>
           </button>
-
-          {#if !entry.open}
-            <p class="tool-preview">{entry.argsPreview}</p>
-          {/if}
-
-          {#if entry.open}
-            <div class="tool-body">
-              <section>
-                <p class="label">Arguments</p>
-                <div class="tool-scroll">
-                  <pre>{entry.args}</pre>
-                </div>
-              </section>
-
-              {#if entry.output}
-                <section>
-                  <p class="label">Output</p>
-                  <div class="tool-scroll">
-                    <pre>{entry.output}</pre>
-                  </div>
-                </section>
-              {/if}
-            </div>
-          {/if}
-        </article>
-      {/if}
-    {/each}
-
-    {#if isTyping}
-      <div class="typing-indicator" aria-live="polite" aria-label="Assistant is typing">
-        <span></span>
-        <span></span>
-        <span></span>
+        {/each}
       </div>
-    {/if}
-  </section>
+      <div class="slash-hint">
+        <p>Slash commands</p>
+        <code>/new [name]</code>
+        <code>/rename &lt;name&gt;</code>
+        <code>/clear</code>
+        <code>/delete</code>
+      </div>
+    </aside>
 
-  <footer class="composer-wrap">
-    <div class="composer">
-      <textarea
-        bind:this={inputEl}
-        bind:value={inputValue}
-        rows="1"
-        placeholder="Message Rika..."
-        on:input={autoResize}
-        on:keydown={onComposerKeydown}
-        disabled={isWaiting}
-      ></textarea>
+    <main class="chat-pane">
+      <section class="messages" bind:this={messagesEl}>
+        {#if entries.length === 0}
+          <article class="welcome">
+            <h2>Ready when you are</h2>
+            <p>
+              Ask about your repo, run tools, and iterate quickly. Rika streams responses and shows
+              tool activity inline.
+            </p>
+          </article>
+        {/if}
 
-      <button type="button" class="send" on:click={sendMessage} disabled={!canSend} aria-label="Send message">
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M2.2 21.8L23 12 2.2 2.2 2 9.8l14.5 2.2L2 14.2z"></path>
-        </svg>
-      </button>
-    </div>
-  </footer>
+        {#each entries as entry (entry.id)}
+          {#if entry.kind === 'message'}
+            <article class={`msg ${entry.role} ${entry.error ? 'error' : ''}`}>
+              <div class="content">{@html renderMarkdown(entry.text)}</div>
+            </article>
+          {:else}
+            <article class="tool-block" data-status={entry.status}>
+              <button class="tool-head" type="button" on:click={() => toggleTool(entry.id)}>
+                <div class="tool-head-main">
+                  <span class="tool-label">Tool</span>
+                  <span class="name">{entry.name}</span>
+                </div>
+
+                <div class="tool-head-right">
+                  <span class={`result ${entry.status}`}>{statusText(entry.status)}</span>
+                  <span class={`caret ${entry.open ? 'open' : ''}`}>▸</span>
+                </div>
+              </button>
+
+              {#if !entry.open}
+                <p class="tool-preview">{entry.argsPreview}</p>
+              {/if}
+
+              {#if entry.open}
+                <div class="tool-body">
+                  <section>
+                    <p class="label">Arguments</p>
+                    <div class="tool-scroll">
+                      <pre>{entry.args}</pre>
+                    </div>
+                  </section>
+
+                  {#if entry.output}
+                    <section>
+                      <p class="label">Output</p>
+                      <div class="tool-scroll">
+                        <pre>{entry.output}</pre>
+                      </div>
+                    </section>
+                  {/if}
+                </div>
+              {/if}
+            </article>
+          {/if}
+        {/each}
+
+        {#if isTyping}
+          <div class="typing-indicator" aria-live="polite" aria-label="Assistant is typing">
+            <span></span>
+            <span></span>
+            <span></span>
+          </div>
+        {/if}
+      </section>
+
+      <footer class="composer-wrap">
+        <div class="composer">
+          <textarea
+            bind:this={inputEl}
+            bind:value={inputValue}
+            rows="1"
+            placeholder="Message Rika... (try /help)"
+            on:input={autoResize}
+            on:keydown={onComposerKeydown}
+            disabled={isWaiting}
+          ></textarea>
+
+          <button type="button" class="send" on:click={sendMessage} disabled={!canSend} aria-label="Send message">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M2.2 21.8L23 12 2.2 2.2 2 9.8l14.5 2.2L2 14.2z"></path>
+            </svg>
+          </button>
+        </div>
+      </footer>
+    </main>
+  </div>
 </div>
 
 {#if showReconnectOverlay}

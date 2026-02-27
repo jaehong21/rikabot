@@ -51,9 +51,9 @@ body {
 
 .shell {
   display: grid;
-  grid-template-rows: auto 1fr auto;
+  grid-template-rows: auto 1fr;
   height: calc(100vh - 2rem);
-  max-width: 980px;
+  max-width: 1220px;
   margin: 0 auto;
   border: 1px solid var(--border-soft);
   border-radius: 24px;
@@ -72,6 +72,98 @@ body {
   padding: 1rem 1.25rem;
   border-bottom: 1px solid var(--border-soft);
   background: linear-gradient(180deg, rgba(20, 24, 34, 0.9), rgba(17, 20, 30, 0.6));
+}
+
+.workspace {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  overflow: hidden;
+}
+
+.chat-pane {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: 1fr auto;
+}
+
+.sidebar {
+  border-right: 1px solid var(--border-soft);
+  background: linear-gradient(180deg, rgba(14, 19, 30, 0.88), rgba(11, 16, 25, 0.85));
+  padding: 0.85rem 0.7rem;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  gap: 0.8rem;
+  min-height: 0;
+}
+
+.sidebar-label {
+  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  font-size: 0.68rem;
+  color: var(--text-muted);
+}
+
+.thread-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  min-height: 0;
+  overflow: auto;
+}
+
+.thread-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.thread-list::-webkit-scrollbar-thumb {
+  background: #2e3a53;
+  border-radius: 999px;
+}
+
+.thread-chip {
+  border: 1px solid #27344f;
+  background: #111a2b;
+  color: #9fb0cb;
+  border-radius: 11px;
+  padding: 0.44rem 0.58rem;
+  font-size: 0.75rem;
+  text-align: left;
+  cursor: pointer;
+  width: 100%;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+
+.thread-chip.active {
+  border-color: #4f81bd;
+  color: #d7ecff;
+  background: #1a283f;
+}
+
+.slash-hint {
+  border: 1px solid #23304a;
+  border-radius: 11px;
+  background: rgba(14, 21, 34, 0.72);
+  padding: 0.55rem;
+  display: grid;
+  gap: 0.28rem;
+}
+
+.slash-hint p {
+  margin: 0 0 0.1rem;
+  color: #9aabc7;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.slash-hint code {
+  font-family: 'IBM Plex Mono', 'Consolas', monospace;
+  color: #cbe6ff;
+  font-size: 0.72rem;
 }
 
 .eyebrow {
@@ -523,6 +615,44 @@ h1 {
 
   .topbar {
     padding: 0.85rem 0.9rem;
+  }
+
+  .workspace {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+  }
+
+  .sidebar {
+    border-right: none;
+    border-bottom: 1px solid var(--border-soft);
+    grid-template-rows: auto auto auto;
+    gap: 0.6rem;
+    padding: 0.72rem 0.8rem;
+  }
+
+  .thread-list {
+    flex-direction: row;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .thread-list::-webkit-scrollbar {
+    width: auto;
+    height: 6px;
+  }
+
+  .thread-chip {
+    min-width: 140px;
+    max-width: 220px;
+  }
+
+  .slash-hint {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: center;
+  }
+
+  .slash-hint p {
+    grid-column: 1 / -1;
   }
 
   .messages {
