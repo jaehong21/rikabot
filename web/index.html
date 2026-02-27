@@ -84,6 +84,12 @@
   #messages::-webkit-scrollbar-track { background: transparent; }
   #messages::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 3px; }
 
+  .turn {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
   .msg {
     max-width: 80%;
     padding: 12px 16px;
@@ -388,6 +394,7 @@
   var reconnectDelay = 1000;
   var currentAssistantEl = null;
   var currentText = '';
+  var currentTurnEl = null;
 
   // -- WebSocket connection --
   function connect() {
@@ -509,7 +516,7 @@
 
     block.appendChild(header);
     block.appendChild(body);
-    messagesEl.appendChild(block);
+    getTurnContainer().appendChild(block);
     scrollToBottom();
   }
 
@@ -563,6 +570,7 @@
     }
 
     setWaiting(false);
+    finishTurn();
     scrollToBottom();
   }
 
@@ -578,20 +586,34 @@
     messagesEl.appendChild(el);
 
     setWaiting(false);
+    finishTurn();
     scrollToBottom();
   }
 
   // -- DOM helpers --
+  function getTurnContainer() {
+    if (!currentTurnEl) {
+      currentTurnEl = document.createElement('div');
+      currentTurnEl.className = 'turn';
+      messagesEl.appendChild(currentTurnEl);
+    }
+    return currentTurnEl;
+  }
+
   function createBubble(role) {
     var el = document.createElement('div');
     el.className = 'msg ' + role;
-    messagesEl.appendChild(el);
+    getTurnContainer().appendChild(el);
     return el;
   }
 
   function finishCurrentBubble() {
     currentAssistantEl = null;
     currentText = '';
+  }
+
+  function finishTurn() {
+    currentTurnEl = null;
   }
 
   function renderMarkdown(el, text) {
@@ -664,6 +686,7 @@
 
     removeWelcome();
 
+    finishTurn();
     var bubble = createBubble('user');
     bubble.textContent = text;
 
