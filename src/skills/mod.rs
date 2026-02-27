@@ -125,29 +125,30 @@ impl SkillsLoader {
         let mut parts: Vec<String> = Vec::new();
         parts.push("# Skills".to_string());
 
-        // Always-loaded skills (full body)
-        let always_skills: Vec<&Skill> = skills
+        // Inline skills: always-loaded OR built-in (no file on disk to `cat`)
+        let inline_skills: Vec<&Skill> = skills
             .iter()
-            .filter(|s| s.meta.always && s.available)
+            .filter(|s| s.available && (s.meta.always || matches!(s.source, SkillSource::Builtin)))
             .collect();
 
-        if !always_skills.is_empty() {
-            parts.push("\n## Active Skills (always loaded)\n".to_string());
-            for skill in &always_skills {
+        if !inline_skills.is_empty() {
+            parts.push("\n## Active Skills\n".to_string());
+            for skill in &inline_skills {
                 parts.push(format!("### {}\n\n{}", skill.meta.name, skill.body));
             }
         }
 
-        // On-demand skills (XML summary)
+        // On-demand workspace skills (have a real file path the agent can `cat`)
         let on_demand_skills: Vec<&Skill> = skills
             .iter()
-            .filter(|s| !(s.meta.always && s.available))
+            .filter(|s| !matches!(s.source, SkillSource::Builtin) || !s.available)
+            .filter(|s| !inline_skills.iter().any(|i| i.meta.name == s.meta.name))
             .collect();
 
         if !on_demand_skills.is_empty() {
             parts.push("\n## Available Skills\n".to_string());
             parts.push(
-                "To use a skill, read its full instructions using the shell tool.\n".to_string(),
+                "To use a skill, read its full instructions: `cat <path>`\n".to_string(),
             );
             parts.push("<skills>".to_string());
 
