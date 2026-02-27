@@ -1,10 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-// ── Built-in skills (embedded at compile time) ──────────────────────────────
-
-const BUILTIN_SKILLS: &[(&str, &str)] = &[("github", include_str!("../../skills/github/SKILL.md"))];
-
 // ── Types ───────────────────────────────────────────────────────────────────
 
 /// Metadata parsed from SKILL.md YAML frontmatter.
@@ -28,7 +24,6 @@ pub struct SkillRequirements {
 /// Where a skill was loaded from.
 #[derive(Debug, Clone)]
 pub enum SkillSource {
-    Builtin,
     Workspace(PathBuf),
 }
 
@@ -46,7 +41,7 @@ pub struct Skill {
 
 // ── SkillsLoader ────────────────────────────────────────────────────────────
 
-/// Discovers and loads skills from built-in and workspace directories.
+/// Discovers and loads skills from the workspace directory.
 pub struct SkillsLoader {
     workspace_dir: Option<PathBuf>,
 }
@@ -56,21 +51,11 @@ impl SkillsLoader {
         Self { workspace_dir }
     }
 
-    /// Load all skills (built-in + workspace). Workspace skills override built-in
-    /// skills with the same name.
+    /// Load all skills from the workspace directory.
     pub fn load_all(&self) -> Vec<Skill> {
         let mut skills_map: HashMap<String, Skill> = HashMap::new();
 
-        // Load built-in skills first
-        for (name, content) in BUILTIN_SKILLS {
-            if let Some(skill) = parse_skill(content, SkillSource::Builtin) {
-                skills_map.insert(name.to_string(), skill);
-            } else {
-                tracing::warn!("Failed to parse built-in skill: {}", name);
-            }
-        }
-
-        // Load workspace skills (override built-in with same name)
+        // Load workspace skills
         if let Some(ref workspace) = self.workspace_dir {
             if workspace.is_dir() {
                 if let Ok(entries) = std::fs::read_dir(workspace) {
@@ -88,11 +73,7 @@ impl SkillsLoader {
                                 if let Some(skill) =
                                     parse_skill(&content, SkillSource::Workspace(skill_file))
                                 {
-                                    tracing::info!(
-                                        "Loaded workspace skill: {} (overrides built-in: {})",
-                                        skill.meta.name,
-                                        skills_map.contains_key(&skill.meta.name)
-                                    );
+                                    tracing::info!("Loaded workspace skill: {}", skill.meta.name);
                                     skills_map.insert(skill.meta.name.clone(), skill);
                                 }
                             }
@@ -123,10 +104,10 @@ impl SkillsLoader {
         let mut parts: Vec<String> = Vec::new();
         parts.push("# Skills".to_string());
 
-        // Inline skills: always-loaded OR built-in (no file on disk to `cat`)
+        // Inline skills: always-loaded and available.
         let inline_skills: Vec<&Skill> = skills
             .iter()
-            .filter(|s| s.available && (s.meta.always || matches!(s.source, SkillSource::Builtin)))
+            .filter(|s| s.available && s.meta.always)
             .collect();
 
         if !inline_skills.is_empty() {
@@ -136,10 +117,9 @@ impl SkillsLoader {
             }
         }
 
-        // On-demand workspace skills (have a real file path the agent can `cat`)
+        // On-demand skills (have a real file path the agent can `cat`)
         let on_demand_skills: Vec<&Skill> = skills
             .iter()
-            .filter(|s| !matches!(s.source, SkillSource::Builtin) || !s.available)
             .filter(|s| !inline_skills.iter().any(|i| i.meta.name == s.meta.name))
             .collect();
 
@@ -151,7 +131,6 @@ impl SkillsLoader {
             for skill in &on_demand_skills {
                 let path_attr = match &skill.source {
                     SkillSource::Workspace(p) => format!("\n    <path>{}</path>", p.display()),
-                    SkillSource::Builtin => String::new(),
                 };
 
                 let missing = if !skill.available {
@@ -357,6 +336,15 @@ fn which(binary: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn make_temp_skills_dir(name: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be monotonic")
+            .as_nanos();
+        std::env::temp_dir().join(format!("rikabot_test_skills_{name}_{nonce}"))
+    }
 
     #[test]
     fn test_parse_frontmatter_basic() {
@@ -461,54 +449,22 @@ Body
     }
 
     #[test]
-    fn test_parse_builtin_skills() {
-        // All built-in skills should parse successfully
-        for (name, content) in BUILTIN_SKILLS {
-            let result = parse_frontmatter(content);
-            assert!(
-                result.is_some(),
-                "Built-in skill '{}' failed to parse",
-                name
-            );
-            let (meta, body) = result.unwrap();
-            assert_eq!(&meta.name, name, "Skill name mismatch for '{}'", name);
-            assert!(
-                !meta.description.is_empty(),
-                "Empty description for '{}'",
-                name
-            );
-            assert!(!body.is_empty(), "Empty body for '{}'", name);
-        }
-    }
-
-    #[test]
-    fn test_skills_loader_builtin_only() {
+    fn test_skills_loader_without_workspace_dir() {
         let loader = SkillsLoader::new(None);
         let skills = loader.load_all();
-        assert_eq!(
-            skills.len(),
-            1,
-            "Expected 1 built-in skill, got {}",
-            skills.len()
-        );
-
-        let names: Vec<&str> = skills.iter().map(|s| s.meta.name.as_str()).collect();
-        assert!(names.contains(&"github"));
+        assert!(skills.is_empty());
     }
 
     #[test]
-    fn test_build_prompt_section_not_empty() {
+    fn test_build_prompt_section_empty_without_workspace_dir() {
         let loader = SkillsLoader::new(None);
         let section = loader.build_prompt_section();
-        assert!(!section.is_empty());
-        assert!(section.contains("# Skills"));
-        assert!(section.contains("github"));
+        assert!(section.is_empty());
     }
 
     #[test]
-    fn test_workspace_skill_override() {
-        // Create a temp directory with a skill that overrides "github"
-        let tmp = std::env::temp_dir().join("rikabot_test_skills");
+    fn test_workspace_skill_loads() {
+        let tmp = make_temp_skills_dir("workspace_skill_loads");
         let skill_dir = tmp.join("github");
         std::fs::create_dir_all(&skill_dir).unwrap();
         std::fs::write(
@@ -520,8 +476,6 @@ always: true
 ---
 
 # Custom GitHub
-
-This overrides the built-in github skill.
 "#,
         )
         .unwrap();
@@ -531,7 +485,7 @@ This overrides the built-in github skill.
         let github = skills.iter().find(|s| s.meta.name == "github").unwrap();
 
         assert_eq!(github.meta.description, "Custom github skill");
-        assert!(github.meta.always); // overridden to true
+        assert!(github.meta.always);
         assert!(matches!(github.source, SkillSource::Workspace(_)));
 
         // Cleanup

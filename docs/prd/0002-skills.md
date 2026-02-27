@@ -9,10 +9,7 @@ Rikabot has a static system prompt that doesn't adapt to available capabilities.
 ## Architecture Overview
 
 ```
-skills/                          # Built-in skills (embedded via include_str!)
-  github/SKILL.md                # gh CLI patterns (requires: gh)
-
-~/.rika/workspace/skills/        # User workspace skills (filesystem, runtime)
+{workspace_dir}/skills/          # Workspace skills (filesystem, runtime)
   custom-skill/SKILL.md
 
 src/skills/mod.rs                # SkillMeta, Skill, SkillsLoader, prompt builder
@@ -74,12 +71,11 @@ pub struct SkillRequirements {
 pub struct Skill {
     pub meta: SkillMeta,
     pub body: String,           // markdown content without frontmatter
-    pub source: SkillSource,    // Builtin or Workspace(PathBuf)
+    pub source: SkillSource,    // Workspace(PathBuf)
     pub available: bool,        // requirements met?
 }
 
 pub enum SkillSource {
-    Builtin,
     Workspace(PathBuf),
 }
 
@@ -130,7 +126,7 @@ Skills are located at `{workspace_dir}/skills/`.
 ### `config.toml`
 
 ```toml
-workspace_dir = "/path/to/custom/workspace"
+workspace_dir = "./workspace"
 
 [skills]
 # enabled = true
@@ -173,18 +169,10 @@ To use a skill, read its full instructions: `cat <path>`
   <skill available="true">
     <name>github</name>
     <description>Interact with GitHub using the gh CLI</description>
-    <path>/Users/x/.rika/workspace/skills/github/SKILL.md</path>
+    <path>/path/to/project/workspace/skills/github/SKILL.md</path>
   </skill>
 </skills>
 ```
-
-## Built-in Skills
-
-| Skill    | Purpose                                      | Always | Requires    |
-| -------- | -------------------------------------------- | ------ | ----------- |
-| `github` | GitHub CLI integration for issues, PRs, runs | no     | `gh` binary |
-
-Built-in skills are embedded via `include_str!` (same pattern as `web/index.html`). Workspace skills override built-in skills with the same name.
 
 ## Dependencies
 
@@ -196,5 +184,5 @@ No new crate dependencies. Uses existing: `serde`, `serde_json`, `std::fs`, `std
 2. `cargo test` — unit tests for frontmatter parsing, requirements checking, prompt building
 3. Run `cargo run` — verify skills section appears in agent behavior
 4. Chat: "what skills do you have?" — agent lists available skills
-5. Workspace override: create `~/.rika/workspace/skills/test/SKILL.md`, verify it loads
+5. Workspace load: create `{workspace_dir}/skills/test/SKILL.md`, verify it loads
 6. Requirement filtering: skill requiring missing binary shows `available="false"`
