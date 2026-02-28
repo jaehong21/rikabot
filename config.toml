@@ -37,6 +37,21 @@ enabled = true
 # enabled = true
 
 [permissions.tools]
+allow = [
+  "filesystem_*(*)",
+  "shell(command:cat *)",
+  "shell(command:cd *)",
+  "shell(command:chmod *)",
+  "shell(command:cp *)",
+  "shell(command:curl *)",
+  "shell(command:find *)",
+  "shell(command:ls *)",
+  "shell(command:mkdir *)",
+  "shell(command:rg *)",
+  "mcp_linear_*(*)",
+  "mcp_notion_*(*)"
+]
+deny = []
 # IMPORTANT: when permissions are enabled and allow is empty, policy is default deny.
 # allow = [
 #   "shell(command:git status *)",

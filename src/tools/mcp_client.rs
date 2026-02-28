@@ -118,7 +118,7 @@ impl McpRegistry {
         let mut tool_index = HashMap::new();
         let tools = server.tools().await;
         for tool in tools {
-            let prefixed = format!("{}__{}", server_name, tool.name);
+            let prefixed = prefixed_tool_name(server_name, &tool.name);
             tool_index.insert(prefixed, (0usize, tool.name));
         }
 
@@ -143,7 +143,7 @@ impl McpRegistry {
                     let server_idx = servers.len();
                     let tools = server.tools().await;
                     for tool in tools {
-                        let prefixed = format!("{}__{}", config.name, tool.name);
+                        let prefixed = prefixed_tool_name(&config.name, &tool.name);
                         tool_index.insert(prefixed, (server_idx, tool.name));
                     }
                     tracing::info!(
@@ -151,7 +151,7 @@ impl McpRegistry {
                         config.name,
                         tool_index
                             .keys()
-                            .filter(|k| k.starts_with(&format!("{}__", config.name)))
+                            .filter(|k| { k.starts_with(&format!("mcp_{}__", config.name)) })
                             .count()
                     );
                     servers.push(server);
@@ -203,6 +203,10 @@ impl McpRegistry {
     }
 }
 
+fn prefixed_tool_name(server_name: &str, tool_name: &str) -> String {
+    format!("mcp_{}__{}", server_name, tool_name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -227,8 +231,8 @@ mod tests {
 
     #[test]
     fn prefixed_name_format() {
-        let prefixed = format!("{}__{}", "linear", "search_issues");
-        assert_eq!(prefixed, "linear__search_issues");
+        let prefixed = prefixed_tool_name("linear", "search_issues");
+        assert_eq!(prefixed, "mcp_linear__search_issues");
     }
 
     #[tokio::test]

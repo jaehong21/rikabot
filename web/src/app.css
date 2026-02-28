@@ -590,8 +590,12 @@ h1 {
   border-color: #2e5570;
 }
 
-.tool-block[data-status='failure'] {
+.tool-block[data-status='failed'] {
   border-color: #6a3040;
+}
+
+.tool-block[data-status='denied'] {
+  border-color: #805f2a;
 }
 
 .tool-head {
@@ -665,10 +669,16 @@ h1 {
   background: rgba(50, 99, 79, 0.2);
 }
 
-.result.failure {
+.result.failed {
   color: #ff9ab0;
   border-color: #713243;
   background: rgba(113, 50, 67, 0.2);
+}
+
+.result.denied {
+  color: #ffd084;
+  border-color: #7a5a22;
+  background: rgba(122, 90, 34, 0.22);
 }
 
 .tool-preview {
@@ -718,6 +728,53 @@ h1 {
 .tool-scroll::-webkit-scrollbar {
   width: 7px;
   height: 7px;
+}
+
+.approval-panel {
+  border: 1px solid #6a5327;
+  border-radius: 10px;
+  background: rgba(54, 42, 20, 0.22);
+  padding: 0.58rem;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.approval-help {
+  margin: 0;
+  color: #d6c8ad;
+  font-size: 0.76rem;
+  line-height: 1.45;
+}
+
+.approval-rule {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.approval-rule span {
+  color: #ceb991;
+  font-size: 0.72rem;
+}
+
+.approval-rule input {
+  border: 1px solid #6a5327;
+  border-radius: 8px;
+  background: #19120a;
+  color: #f5e8d2;
+  padding: 0.45rem 0.5rem;
+  font-family: 'IBM Plex Mono', 'Consolas', monospace;
+  font-size: 0.74rem;
+}
+
+.approval-rule input:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.approval-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.42rem;
 }
 
 .tool-scroll::-webkit-scrollbar-thumb {

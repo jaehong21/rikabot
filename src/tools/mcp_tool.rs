@@ -78,9 +78,9 @@ mod tests {
             description: Some("Search issues".to_string()),
             input_schema: serde_json::json!({"type":"object","properties":{"query":{"type":"string"}}}),
         };
-        let wrapper = McpToolWrapper::new("linear__search".to_string(), def, registry);
+        let wrapper = McpToolWrapper::new("mcp_linear__search".to_string(), def, registry);
 
-        assert_eq!(wrapper.name(), "linear__search");
+        assert_eq!(wrapper.name(), "mcp_linear__search");
         assert_eq!(wrapper.description(), "Search issues");
         assert_eq!(wrapper.parameters_schema()["type"], "object");
     }
@@ -113,7 +113,7 @@ mod tests {
             description: None,
             input_schema: serde_json::json!({"type":"object"}),
         };
-        let wrapper = McpToolWrapper::new("linear__search".to_string(), def, registry);
+        let wrapper = McpToolWrapper::new("mcp_linear__search".to_string(), def, registry);
         let result = wrapper
             .execute(serde_json::json!({"query":"x"}))
             .await

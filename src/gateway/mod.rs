@@ -1,5 +1,6 @@
 pub mod ws;
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -17,6 +18,7 @@ use tower_http::{
 };
 
 use crate::agent::Agent;
+use crate::agent::ToolApprovalDecision;
 use crate::config::PermissionsConfig;
 use crate::config_store::ConfigStore;
 use crate::mcp_runtime::McpRuntime;
@@ -31,6 +33,8 @@ pub struct ActiveRunState {
     pub session_id: String,
     pub events: Vec<Value>,
     pub subscribers: Vec<mpsc::UnboundedSender<Value>>,
+    pub approval_tx: mpsc::UnboundedSender<ToolApprovalDecision>,
+    pub pending_approval_ids: HashSet<String>,
     pub agent_task: JoinHandle<()>,
     pub event_task: JoinHandle<()>,
 }

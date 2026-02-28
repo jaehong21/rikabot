@@ -32,6 +32,47 @@ pub struct ToolResult {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolCallStatus {
+    Success,
+    Failed,
+    Denied,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolExecutionResult {
+    pub status: ToolCallStatus,
+    pub output: String,
+    pub error: Option<String>,
+}
+
+impl ToolExecutionResult {
+    fn success(output: String) -> Self {
+        Self {
+            status: ToolCallStatus::Success,
+            output,
+            error: None,
+        }
+    }
+
+    fn failed(output: String, error: Option<String>) -> Self {
+        Self {
+            status: ToolCallStatus::Failed,
+            output,
+            error,
+        }
+    }
+
+    fn denied(reason: String) -> Self {
+        Self {
+            status: ToolCallStatus::Denied,
+            output: reason.clone(),
+            error: Some(reason),
+        }
+    }
+}
+
 // ── Tool trait ──────────────────────────────────────────────────────────────
 
 /// Core tool trait -- implement for any capability.
@@ -125,7 +166,29 @@ impl ToolRegistry {
     }
 
     /// Execute a tool by name with the given arguments.
-    pub async fn execute(&self, name: &str, args: serde_json::Value) -> Result<ToolResult> {
+    pub async fn execute(
+        &self,
+        name: &str,
+        args: serde_json::Value,
+    ) -> Result<ToolExecutionResult> {
+        self.execute_internal(name, args, true).await
+    }
+
+    /// Execute a tool call bypassing permission checks (for explicit user approvals).
+    pub async fn execute_without_permissions(
+        &self,
+        name: &str,
+        args: serde_json::Value,
+    ) -> Result<ToolExecutionResult> {
+        self.execute_internal(name, args, false).await
+    }
+
+    async fn execute_internal(
+        &self,
+        name: &str,
+        args: serde_json::Value,
+        enforce_permissions: bool,
+    ) -> Result<ToolExecutionResult> {
         let tool = {
             let tools = self
                 .tools
@@ -135,19 +198,35 @@ impl ToolRegistry {
         }
         .ok_or_else(|| anyhow::anyhow!("Unknown tool: {}", name))?;
 
-        let decision = {
-            let permissions = self.permission_engine.read().await;
-            permissions.evaluate(name, &args)
-        };
-        if !decision.allowed {
-            return Ok(ToolResult {
-                success: false,
-                output: String::new(),
-                error: Some(decision.reason),
-            });
+        if enforce_permissions {
+            let decision = {
+                let permissions = self.permission_engine.read().await;
+                permissions.evaluate(name, &args)
+            };
+            if !decision.allowed {
+                let args_preview = serde_json::to_string(&args)
+                    .unwrap_or_else(|_| "<unserializable args>".to_string());
+                let args_preview = if args_preview.chars().count() > 512 {
+                    format!("{}...", args_preview.chars().take(512).collect::<String>())
+                } else {
+                    args_preview
+                };
+                tracing::warn!(
+                    tool = %name,
+                    args = %args_preview,
+                    reason = %decision.reason,
+                    "Tool call denied by permissions"
+                );
+                return Ok(ToolExecutionResult::denied(decision.reason));
+            }
         }
 
-        tool.execute(args).await
+        let result = tool.execute(args).await?;
+        if result.success {
+            Ok(ToolExecutionResult::success(result.output))
+        } else {
+            Ok(ToolExecutionResult::failed(result.output, result.error))
+        }
     }
 }
 

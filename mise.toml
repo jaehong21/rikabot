@@ -17,7 +17,7 @@ run = "bun install"
 run = "cargo build"
 
 [tasks."dev:be"]
-run = "watchexec --restart --exts rs,toml -- cargo run"
+run = "watchexec --restart --exts rs -- cargo run"
 [tasks."dev:fe"]
 dir = "{{cwd}}/web"
 run = "watchexec --restart --exts html,css,ts,svelte -- bun run build"

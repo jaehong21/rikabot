@@ -10,7 +10,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 
-use crate::agent::AgentEvent;
+use crate::agent::{AgentEvent, ToolApprovalDecision, ToolApprovalDecisionKind};
 use crate::config::{PermissionsConfig, ToolPermissionsConfig};
 use crate::gateway::{ActiveRunState, AppState};
 use crate::mcp_runtime::McpStatusSnapshot;
@@ -34,6 +34,12 @@ struct ClientMessage {
     allow: Option<Vec<String>>,
     #[serde(default)]
     deny: Option<Vec<String>>,
+    #[serde(default)]
+    request_id: Option<String>,
+    #[serde(default)]
+    decision: Option<ToolApprovalDecisionKind>,
+    #[serde(default)]
+    allow_rule: Option<String>,
 }
 
 struct RunOutcome {
@@ -194,6 +200,17 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                             .await;
                         }
                     }
+                    "tool_approval_decision" => {
+                        if let Err(err) =
+                            handle_tool_approval_decision(&state, &client_msg, &mut ws_sink).await
+                        {
+                            let _ = send_error(
+                                &mut ws_sink,
+                                &format!("Failed to apply tool approval decision: {}", err),
+                            )
+                            .await;
+                        }
+                    }
                     _ => {
                         if has_active_run(&state).await && is_thread_mutating_command(&client_msg.msg_type) {
                             let _ = send_error(
@@ -305,6 +322,7 @@ async fn spawn_active_run(
     runs_guard.next_run_id = runs_guard.next_run_id.saturating_add(1);
 
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<AgentEvent>();
+    let (approval_tx, approval_rx) = mpsc::unbounded_channel::<ToolApprovalDecision>();
     let (outcome_tx, outcome_rx) = oneshot::channel::<RunOutcome>();
     let agent = state.agent.clone();
     let sessions = state.sessions.clone();
@@ -316,7 +334,13 @@ async fn spawn_active_run(
 
     let agent_task = tokio::spawn(async move {
         let result = agent
-            .run(system_prompt, &mut history_clone, content, event_tx)
+            .run(
+                system_prompt,
+                &mut history_clone,
+                content,
+                event_tx,
+                approval_rx,
+            )
             .await;
         let _ = outcome_tx.send(RunOutcome {
             result,
@@ -328,6 +352,18 @@ async fn spawn_active_run(
     let session_id_for_task = session_id_owned.clone();
     let event_task = tokio::spawn(async move {
         while let Some(event) = event_rx.recv().await {
+            if let AgentEvent::ToolApprovalRequired { request_id, .. } = &event {
+                register_pending_approval(&run_store, run_id, request_id).await;
+            }
+            if let AgentEvent::ToolCallResult {
+                approval_request_id: Some(request_id),
+                awaiting_approval: false,
+                ..
+            } = &event
+            {
+                clear_pending_approval(&run_store, run_id, request_id).await;
+            }
+
             let payload = match serde_json::to_value(&event) {
                 Ok(value) => value,
                 Err(_) => continue,
@@ -377,6 +413,8 @@ async fn spawn_active_run(
         session_id: session_id_owned,
         events: vec![user_payload],
         subscribers: vec![run_signal_tx],
+        approval_tx,
+        pending_approval_ids: std::collections::HashSet::new(),
         agent_task,
         event_task,
     });
@@ -401,6 +439,36 @@ async fn broadcast_run_payload(
     active
         .subscribers
         .retain(|sub| sub.send(payload.clone()).is_ok());
+}
+
+async fn register_pending_approval(
+    runs: &std::sync::Arc<tokio::sync::Mutex<crate::gateway::RunManager>>,
+    run_id: u64,
+    request_id: &str,
+) {
+    let mut runs = runs.lock().await;
+    let Some(active) = runs.active.as_mut() else {
+        return;
+    };
+    if active.run_id != run_id {
+        return;
+    }
+    active.pending_approval_ids.insert(request_id.to_string());
+}
+
+async fn clear_pending_approval(
+    runs: &std::sync::Arc<tokio::sync::Mutex<crate::gateway::RunManager>>,
+    run_id: u64,
+    request_id: &str,
+) {
+    let mut runs = runs.lock().await;
+    let Some(active) = runs.active.as_mut() else {
+        return;
+    };
+    if active.run_id != run_id {
+        return;
+    }
+    active.pending_approval_ids.remove(request_id);
 }
 
 async fn clear_active_run(
@@ -622,14 +690,81 @@ async fn handle_permissions_set(
         tools: ToolPermissionsConfig { allow, deny },
     };
 
-    let engine = match PermissionEngine::from_config(&next) {
-        Ok(engine) => engine,
-        Err(err) => {
-            send_permissions_state(ws_sink, state, Some(vec![err.to_string()])).await?;
-            return Ok(());
+    if let Err(err) = apply_permissions_update(state, next.clone()).await {
+        send_permissions_state(ws_sink, state, Some(vec![err.to_string()])).await?;
+        return Ok(());
+    }
+
+    send_permissions_updated(ws_sink, &next).await
+}
+
+async fn handle_tool_approval_decision(
+    state: &AppState,
+    client_msg: &ClientMessage,
+    ws_sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+) -> anyhow::Result<()> {
+    let request_id = required_field(client_msg.request_id.as_deref(), "request_id")?.to_string();
+    let decision = client_msg
+        .decision
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("missing required field 'decision'"))?;
+
+    if decision == ToolApprovalDecisionKind::AllowPersist {
+        let allow_rule = required_field(client_msg.allow_rule.as_deref(), "allow_rule")?;
+        persist_allow_rule_from_approval(state, allow_rule, ws_sink).await?;
+    }
+
+    let approval_tx = {
+        let mut runs = state.runs.lock().await;
+        let Some(active) = runs.active.as_mut() else {
+            anyhow::bail!("no active run for tool approval decision");
+        };
+        if !active.pending_approval_ids.remove(&request_id) {
+            anyhow::bail!(
+                "unknown or expired tool approval request_id '{}'",
+                request_id
+            );
         }
+        active.approval_tx.clone()
     };
 
+    approval_tx
+        .send(ToolApprovalDecision {
+            request_id,
+            decision,
+        })
+        .map_err(|_| anyhow::anyhow!("active run is not accepting approval decisions"))?;
+
+    Ok(())
+}
+
+async fn persist_allow_rule_from_approval(
+    state: &AppState,
+    allow_rule: &str,
+    ws_sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+) -> anyhow::Result<()> {
+    let allow_rule = allow_rule.trim();
+    if allow_rule.is_empty() {
+        anyhow::bail!("allow_rule cannot be empty");
+    }
+
+    let next = {
+        let current = state.permissions_config.read().await;
+        let mut next = current.clone();
+        if !next.tools.allow.iter().any(|rule| rule == allow_rule) {
+            next.tools.allow.push(allow_rule.to_string());
+        }
+        next
+    };
+
+    apply_permissions_update(state, next.clone()).await?;
+    send_permissions_updated(ws_sink, &next).await?;
+
+    Ok(())
+}
+
+async fn apply_permissions_update(state: &AppState, next: PermissionsConfig) -> anyhow::Result<()> {
+    let engine = PermissionEngine::from_config(&next)?;
     state.config_store.save_permissions(&next)?;
 
     {
@@ -641,7 +776,7 @@ async fn handle_permissions_set(
         *permission_engine = engine;
     }
 
-    send_permissions_updated(ws_sink, &next).await
+    Ok(())
 }
 
 fn sanitize_rules(raw: Option<&Vec<String>>) -> Vec<String> {
@@ -863,6 +998,9 @@ mod tests {
                 enabled: None,
                 allow: None,
                 deny: None,
+                request_id: None,
+                decision: None,
+                allow_rule: None,
             },
             &mut current,
             &mut history,
@@ -883,6 +1021,9 @@ mod tests {
                 enabled: None,
                 allow: None,
                 deny: None,
+                request_id: None,
+                decision: None,
+                allow_rule: None,
             },
             &mut current,
             &mut history,
@@ -903,6 +1044,9 @@ mod tests {
                 enabled: None,
                 allow: None,
                 deny: None,
+                request_id: None,
+                decision: None,
+                allow_rule: None,
             },
             &mut current,
             &mut history,
@@ -926,6 +1070,9 @@ mod tests {
                 enabled: None,
                 allow: None,
                 deny: None,
+                request_id: None,
+                decision: None,
+                allow_rule: None,
             },
             &mut current,
             &mut history,
@@ -946,6 +1093,9 @@ mod tests {
                 enabled: None,
                 allow: None,
                 deny: None,
+                request_id: None,
+                decision: None,
+                allow_rule: None,
             },
             &mut current,
             &mut history,
@@ -974,6 +1124,9 @@ mod tests {
                 enabled: None,
                 allow: None,
                 deny: None,
+                request_id: None,
+                decision: None,
+                allow_rule: None,
             },
             &mut current,
             &mut history,

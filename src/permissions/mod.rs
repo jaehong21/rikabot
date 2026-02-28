@@ -17,7 +17,7 @@ pub struct PermissionEngine {
 #[derive(Debug, Clone)]
 struct CompiledRule {
     raw: String,
-    normalized_tool_name: String,
+    tool_name_matcher: WildcardMatcher,
     matcher: RuleMatcher,
 }
 
@@ -134,7 +134,7 @@ impl PermissionEngine {
 
 impl CompiledRule {
     fn matches(&self, normalized_tool_name: &str, original_tool_name: &str, args: &Value) -> bool {
-        if self.normalized_tool_name != normalized_tool_name {
+        if !self.tool_name_matcher.is_match(normalized_tool_name) {
             return false;
         }
 
@@ -220,12 +220,6 @@ fn compile_rule(raw: &str) -> Result<CompiledRule> {
     if tool_name.is_empty() {
         anyhow::bail!("invalid rule '{}': tool name is empty", raw);
     }
-    if tool_name.contains('*') {
-        anyhow::bail!(
-            "invalid rule '{}': tool name must be exact (wildcards are not supported)",
-            raw
-        );
-    }
 
     let arg_expression = raw[open + 1..close].trim();
     if arg_expression.is_empty() {
@@ -242,7 +236,7 @@ fn compile_rule(raw: &str) -> Result<CompiledRule> {
 
     Ok(CompiledRule {
         raw: raw.to_string(),
-        normalized_tool_name: normalize_tool_name(tool_name),
+        tool_name_matcher: WildcardMatcher::compile(&normalize_tool_name(tool_name))?,
         matcher,
     })
 }
@@ -409,10 +403,11 @@ mod tests {
     }
 
     #[test]
-    fn exact_tool_name_is_required() {
-        let err = PermissionEngine::from_config(&cfg(true, &["shell*(*)"], &[]))
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("must be exact"));
+    fn wildcard_tool_pattern_is_supported() {
+        let engine = PermissionEngine::from_config(&cfg(true, &["mcp_linear_*(*)"], &[])).unwrap();
+        let allowed = engine.evaluate("mcp_linear__search_issues", &serde_json::json!({}));
+        let denied = engine.evaluate("mcp_notion__search", &serde_json::json!({}));
+        assert!(allowed.allowed);
+        assert!(!denied.allowed);
     }
 }

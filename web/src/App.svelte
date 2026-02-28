@@ -27,14 +27,27 @@
     stats?: ResponseStats;
   };
 
+  type ToolStatus = 'running' | 'success' | 'failed' | 'denied';
+  type ToolApprovalDecision = 'allow_persist' | 'allow_once' | 'deny';
+
+  type ToolApprovalState = {
+    requestId: string;
+    suggestedAllowRule: string;
+    allowRuleInput: string;
+    submitting: boolean;
+  };
+
   type ToolEntry = {
     id: string;
     kind: 'tool';
+    callId: string;
     name: string;
     args: string;
     argsPreview: string;
     output: string;
-    status: 'running' | 'success' | 'failure';
+    status: ToolStatus;
+    awaitingApproval: boolean;
+    approval?: ToolApprovalState;
     resolved: boolean;
     open: boolean;
   };
@@ -52,6 +65,7 @@
     toolCalls: number;
     toolSuccess: number;
     toolFailed: number;
+    toolDenied: number;
     usage?: TokenUsage;
   };
 
@@ -62,6 +76,7 @@
     tool_call_count?: number;
     tool_call_success?: number;
     tool_call_failed?: number;
+    tool_call_denied?: number;
     usage?: Partial<TokenUsage>;
   };
 
@@ -93,11 +108,40 @@
     servers?: McpServerStatus[];
   };
 
+  type ToolCallStartEvent = {
+    type: 'tool_call_start';
+    call_id?: string;
+    name?: string;
+    args?: unknown;
+  };
+
+  type ToolCallResultEvent = {
+    type: 'tool_call_result';
+    call_id?: string;
+    name?: string;
+    output?: string;
+    success?: boolean;
+    status?: ToolStatus | 'failure';
+    approval_request_id?: string;
+    awaiting_approval?: boolean;
+  };
+
+  type ToolApprovalRequiredEvent = {
+    type: 'tool_approval_required';
+    request_id?: string;
+    call_id?: string;
+    name?: string;
+    args?: unknown;
+    deny_reason?: string;
+    suggested_allow_rule?: string;
+  };
+
   type ServerEvent =
     | { type: 'user_message'; content?: string }
     | { type: 'chunk'; content?: string }
-    | { type: 'tool_call_start'; name?: string; args?: unknown }
-    | { type: 'tool_call_result'; name?: string; output?: string; success?: boolean }
+    | ToolCallStartEvent
+    | ToolCallResultEvent
+    | ToolApprovalRequiredEvent
     | DoneEvent
     | StoppedEvent
     | { type: 'error'; message?: string }
@@ -212,6 +256,7 @@
   let activeToolCallCount = 0;
   let activeToolSuccessCount = 0;
   let activeToolFailureCount = 0;
+  let activeToolDeniedCount = 0;
 
   let messagesEl: HTMLElement | null = null;
   let inputEl: HTMLTextAreaElement | null = null;
@@ -555,10 +600,13 @@
         onChunk(event.content ?? '');
         return;
       case 'tool_call_start':
-        onToolCallStart(event.name ?? '', event.args ?? '');
+        onToolCallStart(event.call_id ?? '', event.name ?? '', event.args ?? '');
         return;
       case 'tool_call_result':
-        onToolCallResult(event.name ?? '', event.output ?? '', Boolean(event.success));
+        onToolCallResult(event);
+        return;
+      case 'tool_approval_required':
+        onToolApprovalRequired(event);
         return;
       case 'done':
         onDone(event);
@@ -705,11 +753,13 @@
           const entry: ToolEntry = {
             id: nextId(),
             kind: 'tool',
+            callId,
             name,
             args: formattedArgs,
             argsPreview: makePreview(formattedArgs),
             output: '',
             status: 'running',
+            awaitingApproval: false,
             resolved: false,
             open: toolOutputsExpanded
           };
@@ -723,15 +773,21 @@
       if (msg.role === 'tool') {
         let callId = '';
         let output = msg.content;
+        let status: ToolStatus = 'success';
 
         try {
-          const parsed = JSON.parse(msg.content) as { tool_call_id?: unknown; content?: unknown };
+          const parsed = JSON.parse(msg.content) as {
+            tool_call_id?: unknown;
+            content?: unknown;
+            status?: unknown;
+          };
           if (typeof parsed.tool_call_id === 'string') {
             callId = parsed.tool_call_id;
           }
           if (typeof parsed.content === 'string') {
             output = parsed.content;
           }
+          status = normalizeToolStatus(parsed.status, true);
         } catch {
           // Keep fallback output.
         }
@@ -743,7 +799,9 @@
             rebuilt[idx] = {
               ...current,
               output,
-              status: 'success',
+              status,
+              awaitingApproval: false,
+              approval: undefined,
               resolved: true,
               open: toolOutputsExpanded
             };
@@ -765,7 +823,9 @@
         rebuilt[i] = {
           ...entry,
           resolved: true,
-          status: 'failure',
+          status: 'failed',
+          awaitingApproval: false,
+          approval: undefined,
           output: entry.output || 'No stored result found for this tool call.',
           open: toolOutputsExpanded
         };
@@ -808,7 +868,7 @@
     scrollToBottom();
   }
 
-  function onToolCallStart(name: string, args: unknown): void {
+  function onToolCallStart(callId: string, name: string, args: unknown): void {
     if (!isWaiting) {
       setWaiting(true);
     }
@@ -823,11 +883,13 @@
     const entry: ToolEntry = {
       id: nextId(),
       kind: 'tool',
+      callId: callId.trim() || nextId(),
       name: name || 'unknown_tool',
       args: formattedArgs,
       argsPreview: makePreview(formattedArgs),
       output: '',
       status: 'running',
+      awaitingApproval: false,
       resolved: false,
       open: toolOutputsExpanded
     };
@@ -836,7 +898,7 @@
     scrollToBottom();
   }
 
-  function onToolCallResult(name: string, output: string, success: boolean): void {
+  function onToolCallResult(event: ToolCallResultEvent): void {
     if (!isWaiting) {
       setWaiting(true);
     }
@@ -844,13 +906,19 @@
       activeResponseStartedAt = Date.now();
     }
 
-    if (success) {
-      activeToolSuccessCount += 1;
-    } else {
-      activeToolFailureCount += 1;
+    const status = normalizeToolStatus(event.status, Boolean(event.success));
+    const awaitingApproval = Boolean(event.awaiting_approval);
+    if (!awaitingApproval) {
+      if (status === 'success') {
+        activeToolSuccessCount += 1;
+      } else if (status === 'denied') {
+        activeToolDeniedCount += 1;
+      } else if (status === 'failed') {
+        activeToolFailureCount += 1;
+      }
     }
 
-    const idx = findLatestUnresolvedToolIndex(name);
+    const idx = findToolIndex(event.call_id ?? '', event.name ?? '');
     if (idx === -1) {
       scrollToBottom();
       return;
@@ -862,14 +930,55 @@
     if (entry.kind === 'tool') {
       updated[idx] = {
         ...entry,
-        output,
-        status: success ? 'success' : 'failure',
-        resolved: true,
+        output: event.output ?? '',
+        status,
+        awaitingApproval,
+        resolved: !awaitingApproval,
+        approval: awaitingApproval ? entry.approval : undefined,
         open: entry.open || toolOutputsExpanded
       };
       entries = updated;
     }
 
+    scrollToBottom();
+  }
+
+  function onToolApprovalRequired(event: ToolApprovalRequiredEvent): void {
+    const callId = event.call_id ?? '';
+    const name = event.name ?? '';
+    const requestId = event.request_id ?? '';
+    if (!requestId) {
+      return;
+    }
+
+    const idx = findToolIndex(callId, name);
+    if (idx === -1) {
+      return;
+    }
+
+    const updated = [...entries];
+    const entry = updated[idx];
+    if (entry.kind !== 'tool') {
+      return;
+    }
+
+    const suggested = (event.suggested_allow_rule ?? '').trim();
+    updated[idx] = {
+      ...entry,
+      status: 'denied',
+      awaitingApproval: true,
+      resolved: false,
+      output: event.deny_reason ?? entry.output,
+      approval: {
+        requestId,
+        suggestedAllowRule: suggested,
+        allowRuleInput: suggested,
+        submitting: false
+      },
+      open: true
+    };
+
+    entries = updated;
     scrollToBottom();
   }
 
@@ -925,6 +1034,20 @@
       permissionsErrors = [message];
       permissionsSaving = false;
     }
+    if (message.toLowerCase().includes('tool approval')) {
+      entries = entries.map((entry) => {
+        if (entry.kind !== 'tool' || !entry.approval) {
+          return entry;
+        }
+        return {
+          ...entry,
+          approval: {
+            ...entry.approval,
+            submitting: false
+          }
+        };
+      });
+    }
 
     finishCurrentBubble();
 
@@ -962,12 +1085,22 @@
     activeToolCallCount = 0;
     activeToolSuccessCount = 0;
     activeToolFailureCount = 0;
+    activeToolDeniedCount = 0;
     setWaiting(true);
     finishCurrentBubble();
     scrollToBottom();
   }
 
-  function findLatestUnresolvedToolIndex(name: string): number {
+  function findToolIndex(callId: string, name: string): number {
+    if (callId.trim()) {
+      for (let i = entries.length - 1; i >= 0; i -= 1) {
+        const entry = entries[i];
+        if (entry.kind === 'tool' && entry.callId === callId) {
+          return i;
+        }
+      }
+    }
+
     for (let i = entries.length - 1; i >= 0; i -= 1) {
       const entry = entries[i];
       if (entry.kind === 'tool' && !entry.resolved && entry.name === name) {
@@ -999,7 +1132,9 @@
       return {
         ...entry,
         resolved: true,
-        status: 'failure',
+        status: 'failed',
+        awaitingApproval: false,
+        approval: undefined,
         output: entry.output || 'Stopped by user.',
         open: entry.open || toolOutputsExpanded
       };
@@ -1011,6 +1146,7 @@
     activeToolCallCount = 0;
     activeToolSuccessCount = 0;
     activeToolFailureCount = 0;
+    activeToolDeniedCount = 0;
   }
 
   function buildResponseStats(event: DoneEvent): ResponseStats {
@@ -1030,12 +1166,15 @@
         : activeToolSuccessCount;
     const toolFailed =
       typeof event.tool_call_failed === 'number' ? event.tool_call_failed : activeToolFailureCount;
+    const toolDenied =
+      typeof event.tool_call_denied === 'number' ? event.tool_call_denied : activeToolDeniedCount;
 
     return {
       elapsedMs,
       toolCalls,
       toolSuccess,
       toolFailed,
+      toolDenied,
       usage
     };
   }
@@ -1109,7 +1248,18 @@
   function statusText(status: ToolEntry['status']): string {
     if (status === 'running') return 'Running';
     if (status === 'success') return 'Success';
+    if (status === 'denied') return 'Denied';
     return 'Failed';
+  }
+
+  function normalizeToolStatus(raw: unknown, successFallback = false): ToolStatus {
+    if (raw === 'running' || raw === 'success' || raw === 'failed' || raw === 'denied') {
+      return raw;
+    }
+    if (raw === 'failure') {
+      return 'failed';
+    }
+    return successFallback ? 'success' : 'failed';
   }
 
   function mcpStateLabel(state: McpServerState): string {
@@ -1137,6 +1287,70 @@
       return;
     }
     ws.send(JSON.stringify(payload));
+  }
+
+  function updateApprovalRule(entryId: string, value: string): void {
+    entries = entries.map((entry) => {
+      if (entry.kind !== 'tool' || entry.id !== entryId || !entry.approval) {
+        return entry;
+      }
+      return {
+        ...entry,
+        approval: {
+          ...entry.approval,
+          allowRuleInput: value
+        }
+      };
+    });
+  }
+
+  function submitToolApproval(entryId: string, decision: ToolApprovalDecision): void {
+    if (connectionState !== 'connected') {
+      return;
+    }
+
+    const idx = entries.findIndex((entry) => entry.kind === 'tool' && entry.id === entryId);
+    if (idx === -1) {
+      return;
+    }
+
+    const current = entries[idx];
+    if (current.kind !== 'tool' || !current.approval || current.approval.submitting) {
+      return;
+    }
+
+    const allowRule = current.approval.allowRuleInput.trim();
+    if (decision === 'allow_persist' && !allowRule) {
+      entries = entries.map((entry, index) => {
+        if (index !== idx || entry.kind !== 'tool') return entry;
+        return {
+          ...entry,
+          output: 'Allow rule is required for persistent approval.',
+          open: true
+        };
+      });
+      return;
+    }
+
+    entries = entries.map((entry, index) => {
+      if (index !== idx || entry.kind !== 'tool' || !entry.approval) {
+        return entry;
+      }
+      return {
+        ...entry,
+        approval: {
+          ...entry.approval,
+          submitting: true
+        }
+      };
+    });
+
+    sendControl({
+      type: 'tool_approval_decision',
+      request_id: current.approval.requestId,
+      decision,
+      allow_rule: allowRule
+    });
   }
 
   function requestKillSwitch(): void {
@@ -1586,7 +1800,7 @@
               {#if entry.role === 'assistant' && entry.stats}
                 <p class="msg-meta">
                   {formatElapsed(entry.stats.elapsedMs)} · tools {entry.stats.toolCalls}
-                  (success {entry.stats.toolSuccess} / failed {entry.stats.toolFailed}) ·
+                  (success {entry.stats.toolSuccess} / denied {entry.stats.toolDenied} / failed {entry.stats.toolFailed}) ·
                   {formatTokenUsage(entry.stats)}
                 </p>
               {/if}
@@ -1623,6 +1837,52 @@
                       <p class="label">Output</p>
                       <div class="tool-scroll">
                         <pre>{entry.output}</pre>
+                      </div>
+                    </section>
+                  {/if}
+
+                  {#if entry.awaitingApproval && entry.approval}
+                    <section class="approval-panel">
+                      <p class="label">Approval required</p>
+                      <p class="approval-help">
+                        This tool call was blocked by permissions. Choose whether to persist an allow
+                        rule, allow once, or deny.
+                      </p>
+                      <label class="approval-rule">
+                        <span>Suggested allow rule</span>
+                        <input
+                          type="text"
+                          value={entry.approval.allowRuleInput}
+                          disabled={entry.approval.submitting}
+                          on:input={(event) =>
+                            updateApprovalRule(entry.id, (event.currentTarget as HTMLInputElement).value)}
+                        />
+                      </label>
+                      <div class="approval-actions">
+                        <button
+                          type="button"
+                          class="tool-toggle"
+                          on:click={() => submitToolApproval(entry.id, 'allow_persist')}
+                          disabled={entry.approval.submitting}
+                        >
+                          {entry.approval.submitting ? 'Saving…' : 'Always allow (save)'}
+                        </button>
+                        <button
+                          type="button"
+                          class="tool-toggle"
+                          on:click={() => submitToolApproval(entry.id, 'allow_once')}
+                          disabled={entry.approval.submitting}
+                        >
+                          Allow once
+                        </button>
+                        <button
+                          type="button"
+                          class="tool-toggle"
+                          on:click={() => submitToolApproval(entry.id, 'deny')}
+                          disabled={entry.approval.submitting}
+                        >
+                          Deny
+                        </button>
                       </div>
                     </section>
                   {/if}
@@ -1694,7 +1954,7 @@
           <p class="sidebar-label">Settings</p>
           <h2>Permissions</h2>
           <p class="settings-description">
-            Configure tool permissions. Exact tool names only. Use `*` wildcard in argument patterns.
+            Configure tool permissions. Use `*` wildcard in both tool names and argument patterns.
           </p>
 
           <label class="settings-toggle">
