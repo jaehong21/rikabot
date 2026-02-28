@@ -1149,6 +1149,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "toml",
+ "toml_edit",
  "tower-http",
  "tracing",
  "tracing-subscriber",

@@ -3,6 +3,9 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Arc;
+use tokio::sync::RwLock;
+
+use crate::permissions::PermissionEngine;
 
 pub mod filesystem_glob;
 pub mod filesystem_read;
@@ -60,12 +63,22 @@ pub trait Tool: Send + Sync {
 /// Registry holding all available tools.
 pub struct ToolRegistry {
     tools: Vec<Box<dyn Tool>>,
+    permission_engine: Arc<RwLock<PermissionEngine>>,
 }
 
 impl ToolRegistry {
     /// Create an empty registry.
     pub fn new() -> Self {
-        Self { tools: Vec::new() }
+        Self::with_permission_engine(Arc::new(
+            RwLock::new(PermissionEngine::disabled_allow_all()),
+        ))
+    }
+
+    pub fn with_permission_engine(permission_engine: Arc<RwLock<PermissionEngine>>) -> Self {
+        Self {
+            tools: Vec::new(),
+            permission_engine,
+        }
     }
 
     /// Register a new tool.
@@ -107,6 +120,18 @@ impl ToolRegistry {
             .find(|t| t.name() == name)
             .ok_or_else(|| anyhow::anyhow!("Unknown tool: {}", name))?;
 
+        let decision = {
+            let permissions = self.permission_engine.read().await;
+            permissions.evaluate(name, &args)
+        };
+        if !decision.allowed {
+            return Ok(ToolResult {
+                success: false,
+                output: String::new(),
+                error: Some(decision.reason),
+            });
+        }
+
         tool.execute(args).await
     }
 }
@@ -114,8 +139,11 @@ impl ToolRegistry {
 // ── Default registry ────────────────────────────────────────────────────────
 
 /// Create a ToolRegistry pre-loaded with the default tools (shell).
-pub fn default_registry(workspace_dir: &Path) -> ToolRegistry {
-    let mut registry = ToolRegistry::new();
+pub fn default_registry(
+    workspace_dir: &Path,
+    permission_engine: Arc<RwLock<PermissionEngine>>,
+) -> ToolRegistry {
+    let mut registry = ToolRegistry::with_permission_engine(permission_engine);
     registry.register(Box::new(shell::ShellTool::with_workspace_dir(
         30,
         workspace_dir.to_path_buf(),

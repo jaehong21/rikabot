@@ -2,6 +2,8 @@
   import { onDestroy, onMount, tick } from 'svelte';
 
   type ConnectionState = 'connecting' | 'connected' | 'disconnected';
+  type MainView = 'chat' | 'settings';
+  type SettingsSection = 'permissions';
 
   type ThreadRecord = {
     id: string;
@@ -69,6 +71,14 @@
     session_id?: string;
   };
 
+  type PermissionsState = {
+    enabled?: boolean;
+    tools?: {
+      allow?: string[];
+      deny?: string[];
+    };
+  };
+
   type ServerEvent =
     | { type: 'user_message'; content?: string }
     | { type: 'chunk'; content?: string }
@@ -113,6 +123,15 @@
         current_session_id?: string;
         sessions?: ThreadRecord[];
         history?: HistoryMessage[];
+      }
+    | {
+        type: 'permissions_state';
+        permissions?: PermissionsState;
+        validation_errors?: string[];
+      }
+    | {
+        type: 'permissions_updated';
+        permissions?: PermissionsState;
       };
 
   type SlashArgOption = {
@@ -134,9 +153,28 @@
     description: string;
   };
 
+  type CommandBarItem =
+    | {
+        kind: 'view';
+        id: string;
+        title: string;
+        meta: string;
+        view: MainView;
+        section?: SettingsSection;
+      }
+    | {
+        kind: 'session';
+        id: string;
+        title: string;
+        meta: string;
+        session: ThreadRecord;
+      };
+
   let entries: Entry[] = [];
   let threads: ThreadRecord[] = [];
   let currentSessionId: string | null = null;
+  let activeView: MainView = 'chat';
+  let activeSettingsSection: SettingsSection = 'permissions';
 
   let inputValue = '';
   let isWaiting = false;
@@ -187,7 +225,15 @@
   let commandBarOpen = false;
   let commandBarQuery = '';
   let commandBarSelectionIndex = 0;
-  let commandBarSessions: ThreadRecord[] = [];
+  let commandBarItems: CommandBarItem[] = [];
+
+  let permissionsLoaded = false;
+  let permissionsSaving = false;
+  let permissionsEnabled = true;
+  let permissionsAllowText = '';
+  let permissionsDenyText = '';
+  let permissionsErrors: string[] = [];
+  let permissionsSavedAt: number | null = null;
 
   let slashSuggestions: SlashSuggestion[] = [];
   let slashSelectionIndex = 0;
@@ -209,17 +255,43 @@
 
   $: {
     const query = commandBarQuery.trim().toLowerCase();
-    commandBarSessions = threads.filter((thread) => {
+    const views: CommandBarItem[] = [
+      {
+        kind: 'view',
+        id: 'view-chat',
+        title: 'Open chat',
+        meta: 'Main conversation view',
+        view: 'chat'
+      },
+      {
+        kind: 'view',
+        id: 'view-settings-permissions',
+        title: 'Open settings · Permissions',
+        meta: 'Guardrail rules and tool permissions',
+        view: 'settings',
+        section: 'permissions'
+      }
+    ];
+
+    const sessions: CommandBarItem[] = threads.map((thread) => ({
+      kind: 'session',
+      id: `session-${thread.id}`,
+      title: thread.display_name,
+      meta: `${thread.message_count} msgs`,
+      session: thread
+    }));
+
+    const merged = [...views, ...sessions];
+    commandBarItems = merged.filter((item) => {
       if (!query) {
         return true;
       }
-      return (
-        thread.display_name.toLowerCase().includes(query) || thread.id.toLowerCase().includes(query)
-      );
+      const haystack = `${item.title} ${item.meta}`.toLowerCase();
+      return haystack.includes(query);
     });
 
-    if (commandBarSelectionIndex >= commandBarSessions.length) {
-      commandBarSelectionIndex = Math.max(commandBarSessions.length - 1, 0);
+    if (commandBarSelectionIndex >= commandBarItems.length) {
+      commandBarSelectionIndex = Math.max(commandBarItems.length - 1, 0);
     }
   }
 
@@ -307,7 +379,10 @@
   function openCommandBar(): void {
     commandBarOpen = true;
     commandBarQuery = '';
-    const currentIndex = threads.findIndex((thread) => thread.id === currentSessionId);
+    const sessionEntryId = currentSessionId ? `session-${currentSessionId}` : null;
+    const currentIndex = sessionEntryId
+      ? commandBarItems.findIndex((item) => item.kind === 'session' && item.id === sessionEntryId)
+      : -1;
     commandBarSelectionIndex = currentIndex >= 0 ? currentIndex : 0;
     tick().then(() => commandBarInputEl?.focus());
   }
@@ -319,17 +394,29 @@
   }
 
   function moveCommandBarSelection(step: number): void {
-    if (!commandBarSessions.length) {
+    if (!commandBarItems.length) {
       return;
     }
 
     commandBarSelectionIndex =
-      (commandBarSelectionIndex + step + commandBarSessions.length) % commandBarSessions.length;
+      (commandBarSelectionIndex + step + commandBarItems.length) % commandBarItems.length;
   }
 
-  function chooseCommandBarSession(sessionId: string): void {
+  function chooseCommandBarItem(item: CommandBarItem): void {
     closeCommandBar();
-    switchThread(sessionId);
+
+    if (item.kind === 'session') {
+      openChatView();
+      switchThread(item.session.id);
+      return;
+    }
+
+    if (item.view === 'settings') {
+      openSettingsSection(item.section ?? 'permissions');
+      return;
+    }
+
+    openChatView();
   }
 
   function onWindowKeydown(event: KeyboardEvent): void {
@@ -368,9 +455,9 @@
 
     if (event.key === 'Enter') {
       event.preventDefault();
-      const selected = commandBarSessions[commandBarSelectionIndex];
+      const selected = commandBarItems[commandBarSelectionIndex];
       if (selected) {
-        chooseCommandBarSession(selected.id);
+        chooseCommandBarItem(selected);
       }
       return;
     }
@@ -401,6 +488,7 @@
       }
 
       sendControl({ type: 'thread_list' });
+      sendControl({ type: 'permissions_get' });
     };
 
     socket.onclose = () => {
@@ -469,9 +557,25 @@
       case 'thread_renamed':
         applyThreadState(event.sessions, event.current_session_id);
         return;
+      case 'permissions_state':
+        applyPermissionsState(event.permissions, event.validation_errors ?? []);
+        return;
+      case 'permissions_updated':
+        applyPermissionsState(event.permissions, []);
+        permissionsSavedAt = Date.now();
+        return;
       case 'error':
         onError(event.message ?? 'Unknown error');
     }
+  }
+
+  function openChatView(): void {
+    activeView = 'chat';
+  }
+
+  function openSettingsSection(section: SettingsSection): void {
+    activeView = 'settings';
+    activeSettingsSection = section;
   }
 
   function applyThreadState(nextThreads?: ThreadRecord[], currentId?: string): void {
@@ -481,6 +585,26 @@
     if (currentId) {
       currentSessionId = currentId;
     }
+  }
+
+  function applyPermissionsState(permissions?: PermissionsState, validationErrors: string[] = []): void {
+    const enabled = permissions?.enabled;
+    const allow = permissions?.tools?.allow;
+    const deny = permissions?.tools?.deny;
+
+    if (typeof enabled === 'boolean') {
+      permissionsEnabled = enabled;
+    }
+    if (Array.isArray(allow)) {
+      permissionsAllowText = allow.join('\n');
+    }
+    if (Array.isArray(deny)) {
+      permissionsDenyText = deny.join('\n');
+    }
+
+    permissionsErrors = validationErrors;
+    permissionsSaving = false;
+    permissionsLoaded = true;
   }
 
   function hydrateCurrentThread(history: HistoryMessage[]): void {
@@ -761,6 +885,11 @@
   }
 
   function onError(message: string): void {
+    if (permissionsSaving && message.toLowerCase().includes('permission')) {
+      permissionsErrors = [message];
+      permissionsSaving = false;
+    }
+
     finishCurrentBubble();
 
     const entry: MessageEntry = {
@@ -984,6 +1113,28 @@
     sendControl({ type: 'thread_switch', session_id: sessionId });
   }
 
+  function parseRulesInput(raw: string): string[] {
+    return raw
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+  }
+
+  function savePermissions(): void {
+    if (connectionState !== 'connected' || permissionsSaving) {
+      return;
+    }
+
+    permissionsSaving = true;
+    permissionsErrors = [];
+    sendControl({
+      type: 'permissions_set',
+      enabled: permissionsEnabled,
+      allow: parseRulesInput(permissionsAllowText),
+      deny: parseRulesInput(permissionsDenyText)
+    });
+  }
+
   function pushAssistantNote(text: string): void {
     entries = [
       ...entries,
@@ -1076,7 +1227,7 @@
 
     if (cmd === 'help') {
       pushAssistantNote(
-        'Session commands: `/new [name]`, `/rename <name>`, `/clear`, `/delete`, `/stop`\nTool view: `/tools <collapse|expand|hide|show>`\nSession picker: `Cmd/Ctrl+K`'
+        'Session commands: `/new [name]`, `/rename <name>`, `/clear`, `/delete`, `/stop`\nTool view: `/tools <collapse|expand|hide|show>`\nNavigate chat/settings with `Cmd/Ctrl+K`'
       );
       return true;
     }
@@ -1269,6 +1420,23 @@
 
   <div class="workspace">
     <aside class="sidebar">
+      <div class="sidebar-tabs" role="tablist" aria-label="Main panels">
+        <button
+          type="button"
+          class={`sidebar-tab ${activeView === 'chat' ? 'active' : ''}`}
+          on:click={openChatView}
+        >
+          Chat
+        </button>
+        <button
+          type="button"
+          class={`sidebar-tab ${activeView === 'settings' ? 'active' : ''}`}
+          on:click={() => openSettingsSection('permissions')}
+        >
+          Settings
+        </button>
+      </div>
+
       <p class="sidebar-label">Sessions</p>
       <div class="thread-list" role="tablist" aria-label="Threads">
         {#each threads as thread (thread.id)}
@@ -1291,7 +1459,7 @@
         <code>/delete</code>
         <code>/stop</code>
         <code>/tools &lt;collapse|expand|hide|show&gt;</code>
-        <code>Cmd/Ctrl+K sessions</code>
+        <code>Cmd/Ctrl+K navigate</code>
       </div>
       <div class="tool-controls">
         <button
@@ -1308,10 +1476,18 @@
         >
           {showToolCalls ? 'Hide tool calls' : 'Show tool calls'}
         </button>
+        <button
+          type="button"
+          class={`tool-toggle ${activeView === 'settings' ? 'active' : ''}`}
+          on:click={() => openSettingsSection('permissions')}
+        >
+          Open permissions settings
+        </button>
       </div>
     </aside>
 
-    <main class="chat-pane">
+    {#if activeView === 'chat'}
+      <main class="chat-pane">
       <section class="messages" bind:this={messagesEl}>
         {#if entries.length === 0}
           <article class="welcome">
@@ -1430,7 +1606,69 @@
           </button>
         </div>
       </footer>
-    </main>
+      </main>
+    {:else}
+      <main class="settings-pane">
+        {#if activeSettingsSection === 'permissions'}
+          <section class="settings-card">
+          <p class="sidebar-label">Settings</p>
+          <h2>Permissions</h2>
+          <p class="settings-description">
+            Configure tool permissions. Exact tool names only. Use `*` wildcard in argument patterns.
+          </p>
+
+          <label class="settings-toggle">
+            <input type="checkbox" bind:checked={permissionsEnabled} />
+            <span>Enable permissions policy</span>
+          </label>
+
+          <div class="settings-grid">
+            <label class="settings-field">
+              <span>Allow rules (default deny when empty)</span>
+              <textarea
+                rows="10"
+                bind:value={permissionsAllowText}
+                placeholder="shell(command:git commit *)"
+                disabled={!permissionsLoaded || permissionsSaving}
+              ></textarea>
+            </label>
+
+            <label class="settings-field">
+              <span>Deny rules</span>
+              <textarea
+                rows="10"
+                bind:value={permissionsDenyText}
+                placeholder="shell(command:git push *)"
+                disabled={!permissionsLoaded || permissionsSaving}
+              ></textarea>
+            </label>
+          </div>
+
+          {#if permissionsErrors.length > 0}
+            <div class="settings-errors">
+              {#each permissionsErrors as error (`perm-error-${error}`)}
+                <p>{error}</p>
+              {/each}
+            </div>
+          {/if}
+
+          <div class="settings-actions">
+            <button
+              type="button"
+              class="tool-toggle"
+              on:click={savePermissions}
+              disabled={!permissionsLoaded || permissionsSaving}
+            >
+              {permissionsSaving ? 'Saving…' : 'Save permissions'}
+            </button>
+            {#if permissionsSavedAt}
+              <span class="settings-saved">Saved at {new Date(permissionsSavedAt).toLocaleTimeString()}</span>
+            {/if}
+          </div>
+          </section>
+        {/if}
+      </main>
+    {/if}
   </div>
 </div>
 
@@ -1458,20 +1696,23 @@
         on:keydown={onCommandBarKeydown}
       />
 
-      <div class="commandbar-list" role="listbox" aria-label="Sessions">
-        {#if commandBarSessions.length === 0}
-          <p class="commandbar-empty">No matching sessions.</p>
+      <div class="commandbar-list" role="listbox" aria-label="Navigation items">
+        {#if commandBarItems.length === 0}
+          <p class="commandbar-empty">No matching items.</p>
         {:else}
-          {#each commandBarSessions as session, index (session.id)}
+          {#each commandBarItems as item, index (item.id)}
             <button
               type="button"
               class={`commandbar-item ${index === commandBarSelectionIndex ? 'active' : ''}`}
               on:mouseenter={() => (commandBarSelectionIndex = index)}
-              on:click={() => chooseCommandBarSession(session.id)}
+              on:click={() => chooseCommandBarItem(item)}
             >
-              <span class="commandbar-item-title">{session.display_name}</span>
+              <span class="commandbar-item-title">{item.title}</span>
               <span class="commandbar-item-meta">
-                {session.message_count} msgs {session.id === currentSessionId ? '· current' : ''}
+                {item.meta}
+                {#if item.kind === 'session' && item.session.id === currentSessionId}
+                  · current
+                {/if}
               </span>
             </button>
           {/each}

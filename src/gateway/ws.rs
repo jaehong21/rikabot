@@ -11,7 +11,9 @@ use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::agent::AgentEvent;
+use crate::config::{PermissionsConfig, ToolPermissionsConfig};
 use crate::gateway::{ActiveRunState, AppState};
+use crate::permissions::PermissionEngine;
 use crate::providers::ChatMessage;
 
 /// Inbound message from the client.
@@ -19,9 +21,18 @@ use crate::providers::ChatMessage;
 struct ClientMessage {
     #[serde(rename = "type")]
     msg_type: String,
+    #[serde(default)]
     content: Option<String>,
+    #[serde(default)]
     session_id: Option<String>,
+    #[serde(default)]
     display_name: Option<String>,
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    allow: Option<Vec<String>>,
+    #[serde(default)]
+    deny: Option<Vec<String>>,
 }
 
 struct RunOutcome {
@@ -46,6 +57,12 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                 return;
             }
             if send_thread_switched(&mut ws_sink, &sid, &initial_history)
+                .await
+                .is_err()
+            {
+                return;
+            }
+            if send_permissions_state(&mut ws_sink, &state, None)
                 .await
                 .is_err()
             {
@@ -152,6 +169,21 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                         if stop_active_run(&state, "user_cancelled", Some(&current_session_id)).await {
                         } else {
                             let _ = send_stopped(&mut ws_sink, "no_active_run", Some(&current_session_id)).await;
+                        }
+                    }
+                    "permissions_get" => {
+                        if let Err(err) = send_permissions_state(&mut ws_sink, &state, None).await {
+                            tracing::debug!("Failed to send permissions state: {}", err);
+                            break;
+                        }
+                    }
+                    "permissions_set" => {
+                        if let Err(err) = handle_permissions_set(&state, &client_msg, &mut ws_sink).await {
+                            let _ = send_error(
+                                &mut ws_sink,
+                                &format!("Failed to update permissions: {}", err),
+                            )
+                            .await;
                         }
                     }
                     _ => {
@@ -505,6 +537,93 @@ async fn send_stopped(
         .map_err(Into::into)
 }
 
+async fn send_permissions_state(
+    ws_sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    state: &AppState,
+    validation_errors: Option<Vec<String>>,
+) -> anyhow::Result<()> {
+    let permissions = {
+        let current = state.permissions_config.read().await;
+        current.clone()
+    };
+
+    let payload = serde_json::json!({
+        "type": "permissions_state",
+        "permissions": permissions,
+        "validation_errors": validation_errors.unwrap_or_default(),
+    });
+
+    ws_sink
+        .send(Message::text(payload.to_string()))
+        .await
+        .map_err(Into::into)
+}
+
+async fn send_permissions_updated(
+    ws_sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    permissions: &PermissionsConfig,
+) -> anyhow::Result<()> {
+    let payload = serde_json::json!({
+        "type": "permissions_updated",
+        "permissions": permissions,
+    });
+
+    ws_sink
+        .send(Message::text(payload.to_string()))
+        .await
+        .map_err(Into::into)
+}
+
+async fn handle_permissions_set(
+    state: &AppState,
+    client_msg: &ClientMessage,
+    ws_sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+) -> anyhow::Result<()> {
+    let enabled = client_msg
+        .enabled
+        .ok_or_else(|| anyhow::anyhow!("missing required field 'enabled'"))?;
+    let allow = sanitize_rules(client_msg.allow.as_ref());
+    let deny = sanitize_rules(client_msg.deny.as_ref());
+
+    let next = PermissionsConfig {
+        enabled,
+        tools: ToolPermissionsConfig { allow, deny },
+    };
+
+    let engine = match PermissionEngine::from_config(&next) {
+        Ok(engine) => engine,
+        Err(err) => {
+            send_permissions_state(ws_sink, state, Some(vec![err.to_string()])).await?;
+            return Ok(());
+        }
+    };
+
+    state.config_store.save_permissions(&next)?;
+
+    {
+        let mut permissions = state.permissions_config.write().await;
+        *permissions = next.clone();
+    }
+    {
+        let mut permission_engine = state.permission_engine.write().await;
+        *permission_engine = engine;
+    }
+
+    send_permissions_updated(ws_sink, &next).await
+}
+
+fn sanitize_rules(raw: Option<&Vec<String>>) -> Vec<String> {
+    let Some(raw) = raw else {
+        return Vec::new();
+    };
+
+    raw.iter()
+        .map(|rule| rule.trim())
+        .filter(|rule| !rule.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
 async fn handle_thread_command(
     state: &AppState,
     client_msg: &ClientMessage,
@@ -614,6 +733,8 @@ mod tests {
     use uuid::Uuid;
 
     use crate::agent::Agent;
+    use crate::config::{PermissionsConfig, ToolPermissionsConfig};
+    use crate::permissions::PermissionEngine;
     use crate::prompt::{PromptLimits, PromptManager};
     use crate::providers::Provider;
     use crate::session::SessionManager;
@@ -679,6 +800,16 @@ mod tests {
             runs: Arc::new(tokio::sync::Mutex::new(
                 crate::gateway::RunManager::default(),
             )),
+            permissions_config: Arc::new(tokio::sync::RwLock::new(PermissionsConfig {
+                enabled: false,
+                tools: ToolPermissionsConfig::default(),
+            })),
+            permission_engine: Arc::new(tokio::sync::RwLock::new(
+                PermissionEngine::disabled_allow_all(),
+            )),
+            config_store: Arc::new(crate::config_store::ConfigStore::new(
+                workspace.join("config.toml"),
+            )),
         }
     }
 
@@ -696,6 +827,9 @@ mod tests {
                 content: None,
                 session_id: None,
                 display_name: Some("alpha".to_string()),
+                enabled: None,
+                allow: None,
+                deny: None,
             },
             &mut current,
             &mut history,
@@ -713,6 +847,9 @@ mod tests {
                 content: None,
                 session_id: Some(created_id.to_string()),
                 display_name: Some("renamed".to_string()),
+                enabled: None,
+                allow: None,
+                deny: None,
             },
             &mut current,
             &mut history,
@@ -730,6 +867,9 @@ mod tests {
                 content: None,
                 session_id: Some(created_id.to_string()),
                 display_name: None,
+                enabled: None,
+                allow: None,
+                deny: None,
             },
             &mut current,
             &mut history,
@@ -750,6 +890,9 @@ mod tests {
                 content: None,
                 session_id: None,
                 display_name: None,
+                enabled: None,
+                allow: None,
+                deny: None,
             },
             &mut current,
             &mut history,
@@ -767,6 +910,9 @@ mod tests {
                 content: None,
                 session_id: Some(created_id.to_string()),
                 display_name: None,
+                enabled: None,
+                allow: None,
+                deny: None,
             },
             &mut current,
             &mut history,
@@ -792,6 +938,9 @@ mod tests {
                 content: None,
                 session_id: None,
                 display_name: Some("x".to_string()),
+                enabled: None,
+                allow: None,
+                deny: None,
             },
             &mut current,
             &mut history,

@@ -1,6 +1,8 @@
 mod agent;
 mod config;
+mod config_store;
 mod gateway;
+mod permissions;
 mod prompt;
 mod providers;
 mod session;
@@ -42,8 +44,13 @@ async fn main() -> Result<()> {
     // Create provider
     let provider: Box<dyn providers::Provider> = providers::create_provider(&config)?;
 
+    let permissions_config = Arc::new(tokio::sync::RwLock::new(config.permissions.clone()));
+    let permissions_engine = Arc::new(tokio::sync::RwLock::new(
+        permissions::PermissionEngine::from_config(&config.permissions)?,
+    ));
+
     // Create tool registry with default tools anchored to workspace.
-    let mut tool_registry = tools::default_registry(&workspace_dir);
+    let mut tool_registry = tools::default_registry(&workspace_dir, permissions_engine.clone());
 
     if config.mcp.enabled && !config.mcp.servers.is_empty() {
         let mcp_registry = Arc::new(
@@ -78,9 +85,21 @@ async fn main() -> Result<()> {
         &workspace_dir,
     )?));
 
+    let config_store = Arc::new(config_store::ConfigStore::new(PathBuf::from("config.toml")));
+
     // Start gateway
     tracing::info!("Starting server on http://{}:{}", config.host, config.port);
-    gateway::serve(&config.host, config.port, agent, sessions, prompt_manager).await?;
+    gateway::serve(
+        &config.host,
+        config.port,
+        agent,
+        sessions,
+        prompt_manager,
+        permissions_config,
+        permissions_engine,
+        config_store,
+    )
+    .await?;
 
     Ok(())
 }

@@ -1,5 +1,5 @@
 use anyhow::Result;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
@@ -24,6 +24,8 @@ pub struct AppConfig {
     pub skills: SkillsConfig,
     #[serde(default)]
     pub prompt: PromptConfig,
+    #[serde(default)]
+    pub permissions: PermissionsConfig,
     #[serde(default)]
     pub mcp: McpConfig,
 }
@@ -55,6 +57,31 @@ impl Default for PromptConfig {
             bootstrap_total_max_chars: default_bootstrap_total_max_chars(),
         }
     }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PermissionsConfig {
+    #[serde(default = "default_permissions_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub tools: ToolPermissionsConfig,
+}
+
+impl Default for PermissionsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_permissions_enabled(),
+            tools: ToolPermissionsConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct ToolPermissionsConfig {
+    #[serde(default)]
+    pub allow: Vec<String>,
+    #[serde(default)]
+    pub deny: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -235,6 +262,9 @@ fn default_bootstrap_total_max_chars() -> usize {
     150_000
 }
 fn default_mcp_enabled() -> bool {
+    true
+}
+fn default_permissions_enabled() -> bool {
     true
 }
 fn default_mcp_server_enabled() -> bool {
@@ -807,5 +837,13 @@ mod tests {
             init_timeout_secs: None,
         };
         assert_eq!(server.resolved_tool_timeout_secs(), 600);
+    }
+
+    #[test]
+    fn permissions_defaults_to_enabled_with_empty_tool_rules() {
+        let cfg = PermissionsConfig::default();
+        assert!(cfg.enabled);
+        assert!(cfg.tools.allow.is_empty());
+        assert!(cfg.tools.deny.is_empty());
     }
 }
