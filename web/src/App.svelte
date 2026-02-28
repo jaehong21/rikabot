@@ -22,6 +22,7 @@
     role: 'user' | 'assistant';
     text: string;
     error?: boolean;
+    stats?: ResponseStats;
   };
 
   type ToolEntry = {
@@ -38,11 +39,35 @@
 
   type Entry = MessageEntry | ToolEntry;
 
+  type TokenUsage = {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+  };
+
+  type ResponseStats = {
+    elapsedMs: number;
+    toolCalls: number;
+    toolSuccess: number;
+    toolFailed: number;
+    usage?: TokenUsage;
+  };
+
+  type DoneEvent = {
+    type: 'done';
+    full_response?: string;
+    elapsed_ms?: number;
+    tool_call_count?: number;
+    tool_call_success?: number;
+    tool_call_failed?: number;
+    usage?: Partial<TokenUsage>;
+  };
+
   type ServerEvent =
     | { type: 'chunk'; content?: string }
     | { type: 'tool_call_start'; name?: string; args?: unknown }
     | { type: 'tool_call_result'; name?: string; output?: string; success?: boolean }
-    | { type: 'done'; full_response?: string }
+    | DoneEvent
     | { type: 'error'; message?: string }
     | {
         type: 'thread_list';
@@ -91,6 +116,8 @@
   let isTyping = false;
   let connectionState: ConnectionState = 'connecting';
   let showReconnectOverlay = false;
+  let toolOutputsExpanded = true;
+  let showToolCalls = true;
 
   let ws: WebSocket | null = null;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -98,9 +125,16 @@
   let currentAssistantId: string | null = null;
   let disposed = false;
   let idCounter = 0;
+  let activeResponseStartedAt: number | null = null;
+  let activeToolCallCount = 0;
+  let activeToolSuccessCount = 0;
+  let activeToolFailureCount = 0;
 
   let messagesEl: HTMLElement | null = null;
   let inputEl: HTMLTextAreaElement | null = null;
+
+  const TOOL_PREFS_STORAGE_KEY = 'rika.toolOutputsExpanded';
+  const TOOL_VISIBILITY_STORAGE_KEY = 'rika.showToolCalls';
 
   $: canSend =
     !isWaiting &&
@@ -115,6 +149,7 @@
         : 'Disconnected';
 
   onMount(() => {
+    loadUiPreferences();
     connect();
     autoResize();
   });
@@ -131,6 +166,46 @@
   function nextId(): string {
     idCounter += 1;
     return `${Date.now()}-${idCounter}`;
+  }
+
+  function loadUiPreferences(): void {
+    toolOutputsExpanded = readBooleanPreference(TOOL_PREFS_STORAGE_KEY, true);
+    showToolCalls = readBooleanPreference(TOOL_VISIBILITY_STORAGE_KEY, true);
+  }
+
+  function readBooleanPreference(key: string, fallback: boolean): boolean {
+    try {
+      const raw = window.localStorage.getItem(key);
+      if (raw === 'true') return true;
+      if (raw === 'false') return false;
+      return fallback;
+    } catch {
+      return fallback;
+    }
+  }
+
+  function writeBooleanPreference(key: string, value: boolean): void {
+    try {
+      window.localStorage.setItem(key, String(value));
+    } catch {
+      // Ignore storage errors.
+    }
+  }
+
+  function setToolOutputsExpanded(value: boolean): void {
+    toolOutputsExpanded = value;
+    writeBooleanPreference(TOOL_PREFS_STORAGE_KEY, value);
+    entries = entries.map((entry) => {
+      if (entry.kind !== 'tool') {
+        return entry;
+      }
+      return { ...entry, open: value };
+    });
+  }
+
+  function setToolCallsVisible(value: boolean): void {
+    showToolCalls = value;
+    writeBooleanPreference(TOOL_VISIBILITY_STORAGE_KEY, value);
   }
 
   function connect(): void {
@@ -198,7 +273,7 @@
         onToolCallResult(event.name ?? '', event.output ?? '', Boolean(event.success));
         return;
       case 'done':
-        onDone(event.full_response ?? '');
+        onDone(event);
         return;
       case 'thread_list':
         applyThreadState(event.sessions, event.current_session_id);
@@ -206,10 +281,12 @@
       case 'thread_created':
       case 'thread_switched':
       case 'thread_cleared':
-      case 'thread_deleted':
-        applyThreadState(event.sessions, event.current_session_id ?? event.session_id);
+      case 'thread_deleted': {
+        const fallbackSessionId = 'session_id' in event ? event.session_id : undefined;
+        applyThreadState(event.sessions, event.current_session_id ?? fallbackSessionId);
         hydrateCurrentThread(event.history ?? []);
         return;
+      }
       case 'thread_renamed':
         applyThreadState(event.sessions, event.current_session_id);
         return;
@@ -229,6 +306,7 @@
 
   function hydrateCurrentThread(history: HistoryMessage[]): void {
     entries = hydrateEntriesFromHistory(history);
+    resetActiveResponseState();
     finishCurrentBubble();
     isTyping = false;
     setWaiting(false);
@@ -295,7 +373,7 @@
             output: '',
             status: 'running',
             resolved: false,
-            open: false
+            open: toolOutputsExpanded
           };
           const idx = rebuilt.push(entry) - 1;
           toolCallIndex.set(callId, idx);
@@ -329,7 +407,7 @@
               output,
               status: 'success',
               resolved: true,
-              open: false
+              open: toolOutputsExpanded
             };
           }
         } else {
@@ -351,7 +429,7 @@
           resolved: true,
           status: 'failure',
           output: entry.output || 'No stored result found for this tool call.',
-          open: false
+          open: toolOutputsExpanded
         };
       }
     }
@@ -390,6 +468,7 @@
   function onToolCallStart(name: string, args: unknown): void {
     isTyping = false;
     finishCurrentBubble();
+    activeToolCallCount += 1;
 
     const formattedArgs = formatArgs(args);
     const entry: ToolEntry = {
@@ -401,7 +480,7 @@
       output: '',
       status: 'running',
       resolved: false,
-      open: true
+      open: toolOutputsExpanded
     };
 
     entries = [...entries, entry];
@@ -409,6 +488,12 @@
   }
 
   function onToolCallResult(name: string, output: string, success: boolean): void {
+    if (success) {
+      activeToolSuccessCount += 1;
+    } else {
+      activeToolFailureCount += 1;
+    }
+
     const idx = findLatestUnresolvedToolIndex(name);
     if (idx === -1) {
       scrollToBottom();
@@ -424,7 +509,7 @@
         output,
         status: success ? 'success' : 'failure',
         resolved: true,
-        open: entry.open || !success
+        open: entry.open || toolOutputsExpanded
       };
       entries = updated;
     }
@@ -432,8 +517,10 @@
     scrollToBottom();
   }
 
-  function onDone(fullResponse: string): void {
+  function onDone(event: DoneEvent): void {
     isTyping = false;
+    const stats = buildResponseStats(event);
+    const fullResponse = event.full_response ?? '';
 
     if (currentAssistantId) {
       entries = entries.map((entry) => {
@@ -443,7 +530,8 @@
 
         return {
           ...entry,
-          text: fullResponse
+          text: fullResponse,
+          stats
         };
       });
       finishCurrentBubble();
@@ -452,11 +540,13 @@
         id: nextId(),
         kind: 'message',
         role: 'assistant',
-        text: fullResponse
+        text: fullResponse,
+        stats
       };
       entries = [...entries, entry];
     }
 
+    resetActiveResponseState();
     setWaiting(false);
     scrollToBottom();
   }
@@ -475,6 +565,7 @@
 
     entries = [...entries, entry];
 
+    resetActiveResponseState();
     setWaiting(false);
     scrollToBottom();
   }
@@ -499,6 +590,77 @@
     if (!value) {
       tick().then(() => inputEl?.focus());
     }
+  }
+
+  function resetActiveResponseState(): void {
+    activeResponseStartedAt = null;
+    activeToolCallCount = 0;
+    activeToolSuccessCount = 0;
+    activeToolFailureCount = 0;
+  }
+
+  function buildResponseStats(event: DoneEvent): ResponseStats {
+    const elapsedMs =
+      typeof event.elapsed_ms === 'number' && event.elapsed_ms >= 0
+        ? event.elapsed_ms
+        : activeResponseStartedAt
+          ? Date.now() - activeResponseStartedAt
+          : 0;
+
+    const usage = normalizeUsage(event.usage);
+    const toolCalls =
+      typeof event.tool_call_count === 'number' ? event.tool_call_count : activeToolCallCount;
+    const toolSuccess =
+      typeof event.tool_call_success === 'number'
+        ? event.tool_call_success
+        : activeToolSuccessCount;
+    const toolFailed =
+      typeof event.tool_call_failed === 'number' ? event.tool_call_failed : activeToolFailureCount;
+
+    return {
+      elapsedMs,
+      toolCalls,
+      toolSuccess,
+      toolFailed,
+      usage
+    };
+  }
+
+  function normalizeUsage(usage?: Partial<TokenUsage>): TokenUsage | undefined {
+    if (!usage) {
+      return undefined;
+    }
+
+    const promptTokens = Math.max(0, Math.round(Number(usage.prompt_tokens ?? 0)));
+    const completionTokens = Math.max(0, Math.round(Number(usage.completion_tokens ?? 0)));
+    const providedTotal = Math.max(0, Math.round(Number(usage.total_tokens ?? 0)));
+    const totalTokens = providedTotal > 0 ? providedTotal : promptTokens + completionTokens;
+
+    if (promptTokens === 0 && completionTokens === 0 && totalTokens === 0) {
+      return undefined;
+    }
+
+    return {
+      prompt_tokens: promptTokens,
+      completion_tokens: completionTokens,
+      total_tokens: totalTokens
+    };
+  }
+
+  function formatElapsed(ms: number): string {
+    const seconds = ms / 1000;
+    if (seconds >= 10) {
+      return `${seconds.toFixed(0)}s`;
+    }
+    return `${seconds.toFixed(1)}s`;
+  }
+
+  function formatTokenUsage(stats: ResponseStats): string {
+    if (!stats.usage) {
+      return 'tokens n/a';
+    }
+
+    return `tokens ${stats.usage.total_tokens} (in ${stats.usage.prompt_tokens} / out ${stats.usage.completion_tokens})`;
   }
 
   function formatArgs(args: unknown): string {
@@ -560,6 +722,7 @@
       return;
     }
     setWaiting(false);
+    resetActiveResponseState();
     isTyping = false;
     sendControl({ type: 'thread_switch', session_id: sessionId });
   }
@@ -594,8 +757,34 @@
 
     if (cmd === 'help') {
       pushAssistantNote(
-        'Session commands: `/new [name]`, `/rename <name>`, `/clear`, `/delete`'
+        'Session commands: `/new [name]`, `/rename <name>`, `/clear`, `/delete`\nTool view: `/tools <collapse|expand|hide|show>`'
       );
+      return true;
+    }
+
+    if (cmd === 'tools') {
+      const mode = arg.toLowerCase();
+      if (mode === 'collapse') {
+        setToolOutputsExpanded(false);
+        pushAssistantNote('Collapsed all tool outputs.');
+        return true;
+      }
+      if (mode === 'expand') {
+        setToolOutputsExpanded(true);
+        pushAssistantNote('Expanded all tool outputs.');
+        return true;
+      }
+      if (mode === 'hide') {
+        setToolCallsVisible(false);
+        pushAssistantNote('Tool call blocks are now hidden.');
+        return true;
+      }
+      if (mode === 'show') {
+        setToolCallsVisible(true);
+        pushAssistantNote('Tool call blocks are now visible.');
+        return true;
+      }
+      onError('Usage: /tools <collapse|expand|hide|show>');
       return true;
     }
 
@@ -633,6 +822,7 @@
         return true;
       }
       setWaiting(false);
+      resetActiveResponseState();
       isTyping = false;
       sendControl({ type: 'thread_clear' });
       return true;
@@ -647,6 +837,7 @@
         return true;
       }
       setWaiting(false);
+      resetActiveResponseState();
       isTyping = false;
       sendControl({ type: 'thread_delete', session_id: currentSessionId });
       return true;
@@ -666,6 +857,7 @@
     autoResize();
 
     if (handleSlashCommand(text)) {
+      resetActiveResponseState();
       return;
     }
 
@@ -684,6 +876,10 @@
       })
     );
 
+    activeResponseStartedAt = Date.now();
+    activeToolCallCount = 0;
+    activeToolSuccessCount = 0;
+    activeToolFailureCount = 0;
     setWaiting(true);
     isTyping = true;
     finishCurrentBubble();
@@ -769,6 +965,23 @@
         <code>/rename &lt;name&gt;</code>
         <code>/clear</code>
         <code>/delete</code>
+        <code>/tools &lt;collapse|expand|hide|show&gt;</code>
+      </div>
+      <div class="tool-controls">
+        <button
+          type="button"
+          class={`tool-toggle ${toolOutputsExpanded ? '' : 'active'}`}
+          on:click={() => setToolOutputsExpanded(!toolOutputsExpanded)}
+        >
+          {toolOutputsExpanded ? 'Collapse all tool output' : 'Expand all tool output'}
+        </button>
+        <button
+          type="button"
+          class={`tool-toggle ${showToolCalls ? '' : 'active'}`}
+          on:click={() => setToolCallsVisible(!showToolCalls)}
+        >
+          {showToolCalls ? 'Hide tool calls' : 'Show tool calls'}
+        </button>
       </div>
     </aside>
 
@@ -788,8 +1001,15 @@
           {#if entry.kind === 'message'}
             <article class={`msg ${entry.role} ${entry.error ? 'error' : ''}`}>
               <div class="content">{@html renderMarkdown(entry.text)}</div>
+              {#if entry.role === 'assistant' && entry.stats}
+                <p class="msg-meta">
+                  {formatElapsed(entry.stats.elapsedMs)} · tools {entry.stats.toolCalls}
+                  (success {entry.stats.toolSuccess} / failed {entry.stats.toolFailed}) ·
+                  {formatTokenUsage(entry.stats)}
+                </p>
+              {/if}
             </article>
-          {:else}
+          {:else if showToolCalls}
             <article class="tool-block" data-status={entry.status}>
               <button class="tool-head" type="button" on:click={() => toggleTool(entry.id)}>
                 <div class="tool-head-main">

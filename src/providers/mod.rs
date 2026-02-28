@@ -56,7 +56,7 @@ pub struct ToolSpec {
 }
 
 /// Raw token counts from a single LLM API response.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct TokenUsage {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,

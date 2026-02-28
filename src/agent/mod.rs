@@ -1,8 +1,9 @@
 use anyhow::Result;
 use serde::Serialize;
+use std::time::Instant;
 use tokio::sync::mpsc;
 
-use crate::providers::{ChatMessage, ChatResponse, Provider, ToolSpec};
+use crate::providers::{ChatMessage, ChatResponse, Provider, TokenUsage, ToolSpec};
 use crate::tools::ToolRegistry;
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -32,7 +33,14 @@ pub enum AgentEvent {
         success: bool,
     },
     /// Final answer from the assistant.
-    Done { full_response: String },
+    Done {
+        full_response: String,
+        elapsed_ms: u64,
+        tool_call_count: u32,
+        tool_call_success: u32,
+        tool_call_failed: u32,
+        usage: Option<TokenUsage>,
+    },
     /// An error occurred.
     Error { message: String },
 }
@@ -117,6 +125,13 @@ impl Agent {
         tool_specs: &[ToolSpec],
         tx: &mpsc::UnboundedSender<AgentEvent>,
     ) -> Result<()> {
+        let started_at = Instant::now();
+        let mut usage_total = TokenUsage::default();
+        let mut has_usage = false;
+        let mut tool_call_count: u32 = 0;
+        let mut tool_call_success: u32 = 0;
+        let mut tool_call_failed: u32 = 0;
+
         for iteration in 0..MAX_ITERATIONS {
             tracing::debug!("Agent loop iteration {}", iteration);
 
@@ -140,14 +155,33 @@ impl Agent {
                 }
             };
 
+            if let Some(usage) = &response.usage {
+                has_usage = true;
+                usage_total.prompt_tokens = usage_total
+                    .prompt_tokens
+                    .saturating_add(usage.prompt_tokens);
+                usage_total.completion_tokens = usage_total
+                    .completion_tokens
+                    .saturating_add(usage.completion_tokens);
+                usage_total.total_tokens =
+                    usage_total.total_tokens.saturating_add(usage.total_tokens);
+            }
+
             // ── No tool calls => final response ─────────────────────────
             if response.tool_calls.is_empty() {
                 let final_text = response.text.unwrap_or_else(|| "(no response)".to_string());
 
                 history.push(ChatMessage::assistant(&final_text));
 
+                let elapsed_ms =
+                    u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
                 let _ = tx.send(AgentEvent::Done {
                     full_response: final_text,
+                    elapsed_ms,
+                    tool_call_count,
+                    tool_call_success,
+                    tool_call_failed,
+                    usage: has_usage.then_some(usage_total.clone()),
                 });
                 return Ok(());
             }
@@ -188,6 +222,8 @@ impl Agent {
 
             // Execute each tool call sequentially
             for tc in &response.tool_calls {
+                tool_call_count = tool_call_count.saturating_add(1);
+
                 let args: serde_json::Value = serde_json::from_str(&tc.arguments)
                     .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
 
@@ -200,6 +236,12 @@ impl Agent {
 
                 match result {
                     Ok(tool_result) => {
+                        if tool_result.success {
+                            tool_call_success = tool_call_success.saturating_add(1);
+                        } else {
+                            tool_call_failed = tool_call_failed.saturating_add(1);
+                        }
+
                         let _ = tx.send(AgentEvent::ToolCallResult {
                             name: tc.name.clone(),
                             output: tool_result.output.clone(),
@@ -217,6 +259,7 @@ impl Agent {
                     }
                     Err(e) => {
                         let error_output = format!("Tool execution error: {}", e);
+                        tool_call_failed = tool_call_failed.saturating_add(1);
 
                         let _ = tx.send(AgentEvent::ToolCallResult {
                             name: tc.name.clone(),

@@ -166,6 +166,32 @@ body {
   font-size: 0.72rem;
 }
 
+.tool-controls {
+  display: grid;
+  gap: 0.42rem;
+}
+
+.tool-toggle {
+  border: 1px solid #273a58;
+  background: #111b2d;
+  color: #b4c4de;
+  border-radius: 10px;
+  padding: 0.5rem 0.55rem;
+  font-size: 0.73rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tool-toggle:hover {
+  background: #16233a;
+}
+
+.tool-toggle.active {
+  border-color: #4f81bd;
+  color: #d6ecff;
+  background: #1b2b43;
+}
+
 .eyebrow {
   margin: 0;
   text-transform: uppercase;
@@ -276,6 +302,13 @@ h1 {
   white-space: pre-wrap;
   word-break: break-word;
   font-size: 0.95rem;
+}
+
+.msg-meta {
+  margin: 0.55rem 0 0;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  line-height: 1.4;
 }
 
 .content code {
