@@ -115,6 +115,25 @@
         history?: HistoryMessage[];
       };
 
+  type SlashArgOption = {
+    value: string;
+    description: string;
+  };
+
+  type SlashCommandDef = {
+    name: string;
+    description: string;
+    argsHint?: string;
+    argOptions?: SlashArgOption[];
+  };
+
+  type SlashSuggestion = {
+    kind: 'command' | 'arg';
+    label: string;
+    completion: string;
+    description: string;
+  };
+
   let entries: Entry[] = [];
   let threads: ThreadRecord[] = [];
   let currentSessionId: string | null = null;
@@ -140,9 +159,39 @@
 
   let messagesEl: HTMLElement | null = null;
   let inputEl: HTMLTextAreaElement | null = null;
+  let commandBarInputEl: HTMLInputElement | null = null;
 
   const TOOL_PREFS_STORAGE_KEY = 'rika.toolOutputsExpanded';
   const TOOL_VISIBILITY_STORAGE_KEY = 'rika.showToolCalls';
+  const SLASH_COMMANDS: SlashCommandDef[] = [
+    { name: 'help', description: 'Show the available slash commands.' },
+    { name: 'new', description: 'Create a new session.', argsHint: '[name]' },
+    { name: 'rename', description: 'Rename the current session.', argsHint: '<name>' },
+    { name: 'clear', description: 'Clear the current session.' },
+    { name: 'delete', description: 'Delete the current session.' },
+    { name: 'stop', description: 'Stop the active run.' },
+    {
+      name: 'tools',
+      description: 'Tool panel visibility controls.',
+      argsHint: '<collapse|expand|hide|show>',
+      argOptions: [
+        { value: 'collapse', description: 'Collapse every tool output block.' },
+        { value: 'expand', description: 'Expand every tool output block.' },
+        { value: 'hide', description: 'Hide tool call blocks from chat.' },
+        { value: 'show', description: 'Show tool call blocks in chat.' }
+      ]
+    }
+  ];
+  const SLASH_COMMAND_MAP = new Map(SLASH_COMMANDS.map((cmd) => [cmd.name, cmd]));
+
+  let commandBarOpen = false;
+  let commandBarQuery = '';
+  let commandBarSelectionIndex = 0;
+  let commandBarSessions: ThreadRecord[] = [];
+
+  let slashSuggestions: SlashSuggestion[] = [];
+  let slashSelectionIndex = 0;
+  let slashSuggestionSignature = '';
 
   $: canSend =
     !isWaiting &&
@@ -158,10 +207,37 @@
         ? 'Connecting'
         : 'Disconnected';
 
+  $: {
+    const query = commandBarQuery.trim().toLowerCase();
+    commandBarSessions = threads.filter((thread) => {
+      if (!query) {
+        return true;
+      }
+      return (
+        thread.display_name.toLowerCase().includes(query) || thread.id.toLowerCase().includes(query)
+      );
+    });
+
+    if (commandBarSelectionIndex >= commandBarSessions.length) {
+      commandBarSelectionIndex = Math.max(commandBarSessions.length - 1, 0);
+    }
+  }
+
+  $: {
+    const nextSuggestions = buildSlashSuggestions(inputValue);
+    const signature = nextSuggestions.map((item) => item.completion).join('|');
+    if (signature !== slashSuggestionSignature) {
+      slashSelectionIndex = 0;
+      slashSuggestionSignature = signature;
+    }
+    slashSuggestions = nextSuggestions;
+  }
+
   onMount(() => {
     loadUiPreferences();
     connect();
     autoResize();
+    window.addEventListener('keydown', onWindowKeydown);
   });
 
   onDestroy(() => {
@@ -170,6 +246,7 @@
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
     }
+    window.removeEventListener('keydown', onWindowKeydown);
     ws?.close();
   });
 
@@ -216,6 +293,92 @@
   function setToolCallsVisible(value: boolean): void {
     showToolCalls = value;
     writeBooleanPreference(TOOL_VISIBILITY_STORAGE_KEY, value);
+  }
+
+  function isCommandBarShortcut(event: KeyboardEvent): boolean {
+    return (
+      !event.shiftKey &&
+      !event.altKey &&
+      (event.metaKey || event.ctrlKey) &&
+      event.key.toLowerCase() === 'k'
+    );
+  }
+
+  function openCommandBar(): void {
+    commandBarOpen = true;
+    commandBarQuery = '';
+    const currentIndex = threads.findIndex((thread) => thread.id === currentSessionId);
+    commandBarSelectionIndex = currentIndex >= 0 ? currentIndex : 0;
+    tick().then(() => commandBarInputEl?.focus());
+  }
+
+  function closeCommandBar(): void {
+    commandBarOpen = false;
+    commandBarQuery = '';
+    tick().then(() => inputEl?.focus());
+  }
+
+  function moveCommandBarSelection(step: number): void {
+    if (!commandBarSessions.length) {
+      return;
+    }
+
+    commandBarSelectionIndex =
+      (commandBarSelectionIndex + step + commandBarSessions.length) % commandBarSessions.length;
+  }
+
+  function chooseCommandBarSession(sessionId: string): void {
+    closeCommandBar();
+    switchThread(sessionId);
+  }
+
+  function onWindowKeydown(event: KeyboardEvent): void {
+    if (event.defaultPrevented) {
+      return;
+    }
+
+    if (isCommandBarShortcut(event)) {
+      event.preventDefault();
+      if (commandBarOpen) {
+        closeCommandBar();
+      } else {
+        openCommandBar();
+      }
+      return;
+    }
+
+    if (commandBarOpen && event.key === 'Escape') {
+      event.preventDefault();
+      closeCommandBar();
+    }
+  }
+
+  function onCommandBarKeydown(event: KeyboardEvent): void {
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      moveCommandBarSelection(1);
+      return;
+    }
+
+    if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      moveCommandBarSelection(-1);
+      return;
+    }
+
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      const selected = commandBarSessions[commandBarSelectionIndex];
+      if (selected) {
+        chooseCommandBarSession(selected.id);
+      }
+      return;
+    }
+
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeCommandBar();
+    }
   }
 
   function connect(): void {
@@ -834,6 +997,68 @@
     scrollToBottom();
   }
 
+  function commandCompletion(command: SlashCommandDef): string {
+    return command.argsHint ? `/${command.name} ` : `/${command.name}`;
+  }
+
+  function buildSlashSuggestions(rawInput: string): SlashSuggestion[] {
+    if (!rawInput.startsWith('/')) {
+      return [];
+    }
+
+    const body = rawInput.slice(1);
+    const firstSpace = body.indexOf(' ');
+
+    if (firstSpace === -1) {
+      const query = body.trim().toLowerCase();
+      return SLASH_COMMANDS.filter((command) => command.name.startsWith(query)).map((command) => ({
+        kind: 'command',
+        label: `/${command.name}${command.argsHint ? ` ${command.argsHint}` : ''}`,
+        completion: commandCompletion(command),
+        description: command.description
+      }));
+    }
+
+    const commandName = body.slice(0, firstSpace).trim().toLowerCase();
+    const command = SLASH_COMMAND_MAP.get(commandName);
+    if (!command || !command.argOptions || command.argOptions.length === 0) {
+      return [];
+    }
+
+    const argInput = body.slice(firstSpace + 1).trim().toLowerCase();
+    return command.argOptions
+      .filter((option) => !argInput || option.value.startsWith(argInput))
+      .map((option) => ({
+        kind: 'arg',
+        label: `/${command.name} ${option.value}`,
+        completion: `/${command.name} ${option.value}`,
+        description: option.description
+      }));
+  }
+
+  function moveSlashSelection(step: number): void {
+    if (!slashSuggestions.length) {
+      return;
+    }
+    slashSelectionIndex = (slashSelectionIndex + step + slashSuggestions.length) % slashSuggestions.length;
+  }
+
+  function applySlashSuggestionAt(index: number): void {
+    const selected = slashSuggestions[index];
+    if (!selected) {
+      return;
+    }
+
+    inputValue = selected.completion;
+    autoResize();
+    tick().then(() => {
+      if (!inputEl) return;
+      inputEl.focus();
+      const pos = inputValue.length;
+      inputEl.setSelectionRange(pos, pos);
+    });
+  }
+
   function handleSlashCommand(raw: string): boolean {
     if (!raw.startsWith('/')) {
       return false;
@@ -851,7 +1076,7 @@
 
     if (cmd === 'help') {
       pushAssistantNote(
-        'Session commands: `/new [name]`, `/rename <name>`, `/clear`, `/delete`, `/stop`\nTool view: `/tools <collapse|expand|hide|show>`'
+        'Session commands: `/new [name]`, `/rename <name>`, `/clear`, `/delete`, `/stop`\nTool view: `/tools <collapse|expand|hide|show>`\nSession picker: `Cmd/Ctrl+K`'
       );
       return true;
     }
@@ -967,6 +1192,24 @@
   }
 
   function onComposerKeydown(event: KeyboardEvent): void {
+    if (slashSuggestions.length > 0 && event.key === 'ArrowDown') {
+      event.preventDefault();
+      moveSlashSelection(1);
+      return;
+    }
+
+    if (slashSuggestions.length > 0 && event.key === 'ArrowUp') {
+      event.preventDefault();
+      moveSlashSelection(-1);
+      return;
+    }
+
+    if (slashSuggestions.length > 0 && event.key === 'Tab') {
+      event.preventDefault();
+      applySlashSuggestionAt(slashSelectionIndex);
+      return;
+    }
+
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       sendMessage();
@@ -1048,6 +1291,7 @@
         <code>/delete</code>
         <code>/stop</code>
         <code>/tools &lt;collapse|expand|hide|show&gt;</code>
+        <code>Cmd/Ctrl+K sessions</code>
       </div>
       <div class="tool-controls">
         <button
@@ -1142,12 +1386,28 @@
       </section>
 
       <footer class="composer-wrap">
+        {#if slashSuggestions.length > 0}
+          <div class="slash-autocomplete" role="listbox" aria-label="Slash suggestions">
+            {#each slashSuggestions as suggestion, index (`${suggestion.kind}-${suggestion.label}`)}
+              <button
+                type="button"
+                class={`slash-option ${index === slashSelectionIndex ? 'active' : ''}`}
+                on:mousedown|preventDefault={() => applySlashSuggestionAt(index)}
+                on:mouseenter={() => (slashSelectionIndex = index)}
+              >
+                <span class="slash-option-label">{suggestion.label}</span>
+                <span class="slash-option-description">{suggestion.description}</span>
+              </button>
+            {/each}
+          </div>
+        {/if}
+
         <div class="composer">
           <textarea
             bind:this={inputEl}
             bind:value={inputValue}
             rows="1"
-            placeholder="Message Rika... (try /help)"
+            placeholder="Message Rika... (try /help or Cmd/Ctrl+K)"
             on:input={autoResize}
             on:keydown={onComposerKeydown}
             disabled={isWaiting}
@@ -1173,6 +1433,53 @@
     </main>
   </div>
 </div>
+
+{#if commandBarOpen}
+  <aside class="commandbar-overlay" role="presentation">
+    <button
+      type="button"
+      class="commandbar-backdrop"
+      aria-label="Close session switcher"
+      on:click={closeCommandBar}
+    ></button>
+    <div
+      class="commandbar"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Session switcher"
+      tabindex="-1"
+    >
+      <input
+        bind:this={commandBarInputEl}
+        bind:value={commandBarQuery}
+        class="commandbar-input"
+        type="text"
+        placeholder="Jump to session..."
+        on:keydown={onCommandBarKeydown}
+      />
+
+      <div class="commandbar-list" role="listbox" aria-label="Sessions">
+        {#if commandBarSessions.length === 0}
+          <p class="commandbar-empty">No matching sessions.</p>
+        {:else}
+          {#each commandBarSessions as session, index (session.id)}
+            <button
+              type="button"
+              class={`commandbar-item ${index === commandBarSelectionIndex ? 'active' : ''}`}
+              on:mouseenter={() => (commandBarSelectionIndex = index)}
+              on:click={() => chooseCommandBarSession(session.id)}
+            >
+              <span class="commandbar-item-title">{session.display_name}</span>
+              <span class="commandbar-item-meta">
+                {session.message_count} msgs {session.id === currentSessionId ? '· current' : ''}
+              </span>
+            </button>
+          {/each}
+        {/if}
+      </div>
+    </div>
+  </aside>
+{/if}
 
 {#if showReconnectOverlay}
   <aside class="reconnect-overlay" role="status" aria-live="polite">

@@ -542,6 +542,47 @@ h1 {
   padding: 1rem 1.15rem 1.15rem;
 }
 
+.slash-autocomplete {
+  margin: 0 0 0.65rem;
+  border: 1px solid #2a3956;
+  border-radius: 12px;
+  background: #101827;
+  overflow: hidden;
+  display: grid;
+}
+
+.slash-option {
+  border: none;
+  width: 100%;
+  background: transparent;
+  color: #bbcae1;
+  padding: 0.5rem 0.68rem;
+  display: grid;
+  gap: 0.15rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.slash-option + .slash-option {
+  border-top: 1px solid #1e2a42;
+}
+
+.slash-option:hover,
+.slash-option.active {
+  background: #182438;
+}
+
+.slash-option-label {
+  font-family: 'IBM Plex Mono', 'Consolas', monospace;
+  font-size: 0.78rem;
+  color: #d6ebff;
+}
+
+.slash-option-description {
+  font-size: 0.72rem;
+  color: #8fa2c1;
+}
+
 .composer {
   border: 1px solid #2b3851;
   background: linear-gradient(180deg, #161d2a 0%, #131925 100%);
@@ -632,6 +673,92 @@ h1 {
 .kill-switch:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+.commandbar-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  background: rgba(4, 6, 11, 0.58);
+  backdrop-filter: blur(3px);
+  display: grid;
+  place-items: start center;
+  padding: 10vh 1rem 1rem;
+}
+
+.commandbar-backdrop {
+  position: absolute;
+  inset: 0;
+  border: none;
+  background: transparent;
+  cursor: default;
+  padding: 0;
+}
+
+.commandbar {
+  position: relative;
+  z-index: 1;
+  width: min(640px, 100%);
+  border: 1px solid #324160;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #141d2d, #101726);
+  box-shadow: 0 22px 60px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+
+.commandbar-input {
+  width: 100%;
+  border: none;
+  border-bottom: 1px solid #273651;
+  background: #10192a;
+  color: #e6f0ff;
+  font-size: 0.93rem;
+  padding: 0.8rem 0.9rem;
+  outline: none;
+}
+
+.commandbar-input::placeholder {
+  color: #7f91af;
+}
+
+.commandbar-list {
+  max-height: 330px;
+  overflow: auto;
+  display: grid;
+}
+
+.commandbar-item {
+  border: none;
+  border-top: 1px solid #1c2a41;
+  background: transparent;
+  color: #b9cbe6;
+  padding: 0.62rem 0.9rem;
+  display: grid;
+  gap: 0.16rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.commandbar-item:hover,
+.commandbar-item.active {
+  background: #1a2840;
+}
+
+.commandbar-item-title {
+  font-size: 0.84rem;
+  color: #e6efff;
+}
+
+.commandbar-item-meta {
+  font-size: 0.73rem;
+  color: #8da1bf;
+}
+
+.commandbar-empty {
+  margin: 0;
+  padding: 0.92rem;
+  color: #9fb2cf;
+  font-size: 0.83rem;
 }
 
 .reconnect-overlay {
@@ -731,5 +858,9 @@ h1 {
 
   .composer-wrap {
     padding: 0.75rem;
+  }
+
+  .commandbar-overlay {
+    padding-top: 12vh;
   }
 }
