@@ -251,6 +251,27 @@ mod tests {
     }
 
     #[test]
+    fn seeded_templates_include_bootstrap_placeholders_and_guidance() {
+        let workspace = temp_workspace("template_contract");
+        let _manager = manager(&workspace, 20_000, 150_000);
+
+        let identity = fs::read_to_string(workspace.join("IDENTITY.md")).expect("read identity");
+        assert!(!identity.contains("Name: Rika"));
+        assert!(identity.contains("Name: TBD"));
+        assert!(identity.contains("Role: TBD"));
+
+        let user = fs::read_to_string(workspace.join("USER.md")).expect("read user");
+        assert!(user.contains("Name: TBD"));
+        assert!(user.contains("Preferred address: TBD"));
+        assert!(user.contains("Timezone: TBD"));
+
+        let agents = fs::read_to_string(workspace.join("AGENTS.md")).expect("read agents");
+        assert!(agents.contains("First Run / Profile Bootstrap"));
+        assert!(agents.contains("Soft gate behavior"));
+        assert!(agents.contains("If the user says \"later\""));
+    }
+
+    #[test]
     fn does_not_overwrite_existing_file() {
         let workspace = temp_workspace("preserve");
         let agents = workspace.join("AGENTS.md");
