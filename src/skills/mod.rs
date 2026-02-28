@@ -73,7 +73,7 @@ impl SkillsLoader {
                                 if let Some(skill) =
                                     parse_skill(&content, SkillSource::Workspace(skill_file))
                                 {
-                                    tracing::info!("Loaded workspace skill: {}", skill.meta.name);
+                                    tracing::debug!("Loaded workspace skill: {}", skill.meta.name);
                                     skills_map.insert(skill.meta.name.clone(), skill);
                                 }
                             }
