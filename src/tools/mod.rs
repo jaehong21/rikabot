@@ -2,11 +2,16 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::sync::Arc;
 
 pub mod filesystem_glob;
 pub mod filesystem_read;
 pub mod filesystem_search;
 pub mod filesystem_write;
+pub mod mcp_client;
+pub mod mcp_protocol;
+pub mod mcp_tool;
+pub mod mcp_transport;
 pub mod shell;
 
 // Re-export ToolSpec from providers (single source of truth).
@@ -65,6 +70,27 @@ impl ToolRegistry {
     /// Register a new tool.
     pub fn register(&mut self, tool: Box<dyn Tool>) {
         self.tools.push(tool);
+    }
+
+    pub async fn register_mcp_tools(
+        &mut self,
+        registry: Arc<mcp_client::McpRegistry>,
+    ) -> Result<usize> {
+        let mut added = 0usize;
+        let mut names = registry.tool_names();
+        names.sort();
+        for prefixed in names {
+            let Some(def) = registry.get_tool_def(&prefixed).await else {
+                continue;
+            };
+            self.register(Box::new(mcp_tool::McpToolWrapper::new(
+                prefixed,
+                def,
+                registry.clone(),
+            )));
+            added += 1;
+        }
+        Ok(added)
     }
 
     /// Get specs for all registered tools (for sending to the LLM).

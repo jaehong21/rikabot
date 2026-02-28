@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 # Async runtime & utilities
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "process", "net", "sync"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "process", "net", "sync", "io-util"] }
 futures-util = { version = "0.3", features = ["sink"] }
 async-trait = "0.1"
 

@@ -43,7 +43,16 @@ async fn main() -> Result<()> {
     let provider: Box<dyn providers::Provider> = providers::create_provider(&config)?;
 
     // Create tool registry with default tools anchored to workspace.
-    let tool_registry = tools::default_registry(&workspace_dir);
+    let mut tool_registry = tools::default_registry(&workspace_dir);
+
+    if config.mcp.enabled && !config.mcp.servers.is_empty() {
+        let mcp_registry =
+            Arc::new(tools::mcp_client::McpRegistry::connect_all(&config.mcp.servers).await);
+        let added = tool_registry
+            .register_mcp_tools(mcp_registry.clone())
+            .await?;
+        tracing::info!("Registered {} MCP tool(s)", added);
+    }
 
     let prompt_manager = Arc::new(prompt::PromptManager::new(
         &workspace_dir,

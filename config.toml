@@ -24,3 +24,24 @@ api_key = "xxx"
 # [prompt]
 # bootstrap_max_chars = 20000 # default: 20000
 # bootstrap_total_max_chars = 150000 # default: 150000
+
+# [mcp]
+# enabled = true # default: true
+
+# [[mcp.servers]]
+# name = "filesystem"
+# transport = "stdio" # default: "stdio"
+# command = "npx"
+# args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+# tool_timeout_secs = 180 # default: 180, max: 600
+# init_timeout_secs = 30 # default: 30
+# enabled = true # default: true
+
+# [[mcp.servers]]
+# name = "linear"
+# transport = "http" # default: "stdio"
+# url = "https://mcp.linear.app/mcp"
+# headers = { Authorization = "Bearer ${LINEAR_MCP_TOKEN}" }
+# tool_timeout_secs = 180 # default: 180, max: 600
+# init_timeout_secs = 30 # default: 30
+# enabled = true # default: true

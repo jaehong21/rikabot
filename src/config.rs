@@ -1,5 +1,6 @@
 use anyhow::Result;
 use serde::Deserialize;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -23,6 +24,8 @@ pub struct AppConfig {
     pub skills: SkillsConfig,
     #[serde(default)]
     pub prompt: PromptConfig,
+    #[serde(default)]
+    pub mcp: McpConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -52,6 +55,106 @@ impl Default for PromptConfig {
             bootstrap_total_max_chars: default_bootstrap_total_max_chars(),
         }
     }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct McpConfig {
+    #[serde(default = "default_mcp_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub servers: Vec<McpServerConfig>,
+}
+
+impl Default for McpConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_mcp_enabled(),
+            servers: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum McpTransport {
+    Stdio,
+    Http,
+}
+
+impl Default for McpTransport {
+    fn default() -> Self {
+        Self::Stdio
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct McpServerConfig {
+    pub name: String,
+    #[serde(default = "default_mcp_server_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub transport: McpTransport,
+    pub command: Option<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+    pub cwd: Option<String>,
+    pub url: Option<String>,
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+    pub tool_timeout_secs: Option<u64>,
+    pub init_timeout_secs: Option<u64>,
+}
+
+impl McpServerConfig {
+    pub fn resolved_tool_timeout_secs(&self) -> u64 {
+        self.tool_timeout_secs
+            .unwrap_or(default_mcp_tool_timeout_secs())
+            .min(max_mcp_tool_timeout_secs())
+    }
+
+    pub fn resolved_init_timeout_secs(&self) -> u64 {
+        self.init_timeout_secs
+            .unwrap_or(default_mcp_init_timeout_secs())
+    }
+
+    pub fn resolved_http_headers(&self) -> Result<HashMap<String, String>> {
+        let mut resolved = HashMap::with_capacity(self.headers.len());
+        for (key, value) in &self.headers {
+            resolved.insert(key.clone(), resolve_env_placeholders(value)?);
+        }
+        Ok(resolved)
+    }
+}
+
+fn resolve_env_placeholders(input: &str) -> Result<String> {
+    if input.contains("${") && !input.contains('}') {
+        anyhow::bail!("unterminated env placeholder in header value");
+    }
+
+    let re = regex::Regex::new(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+        .map_err(|e| anyhow::anyhow!("failed to compile env placeholder regex: {}", e))?;
+
+    let mut out = String::with_capacity(input.len());
+    let mut last = 0usize;
+    for caps in re.captures_iter(input) {
+        let full = caps.get(0).expect("capture 0 should exist");
+        let var = caps
+            .get(1)
+            .expect("capture 1 should exist for env placeholder")
+            .as_str();
+        out.push_str(&input[last..full.start()]);
+        let env_val = std::env::var(var)
+            .map_err(|_| anyhow::anyhow!("env var '{}' not set for MCP header", var))?;
+        out.push_str(&env_val);
+        last = full.end();
+    }
+    out.push_str(&input[last..]);
+    if out.contains("${") {
+        anyhow::bail!("invalid env placeholder format in header value");
+    }
+    Ok(out)
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -96,6 +199,68 @@ fn default_bootstrap_max_chars() -> usize {
 }
 fn default_bootstrap_total_max_chars() -> usize {
     150_000
+}
+fn default_mcp_enabled() -> bool {
+    true
+}
+fn default_mcp_server_enabled() -> bool {
+    true
+}
+fn default_mcp_tool_timeout_secs() -> u64 {
+    180
+}
+fn max_mcp_tool_timeout_secs() -> u64 {
+    600
+}
+fn default_mcp_init_timeout_secs() -> u64 {
+    30
+}
+
+impl McpConfig {
+    pub fn validate(&self) -> Result<()> {
+        let mut names = HashSet::new();
+
+        for server in &self.servers {
+            if !names.insert(server.name.clone()) {
+                anyhow::bail!("duplicate MCP server name '{}'", server.name);
+            }
+            if server.name.trim().is_empty() {
+                anyhow::bail!("MCP server name cannot be empty");
+            }
+
+            match server.transport {
+                McpTransport::Stdio => {
+                    let command = server.command.as_deref().map(str::trim).unwrap_or("");
+                    if command.is_empty() {
+                        anyhow::bail!(
+                            "MCP server '{}' with stdio transport requires non-empty command",
+                            server.name
+                        );
+                    }
+                }
+                McpTransport::Http => {
+                    let url = server.url.as_deref().map(str::trim).unwrap_or("");
+                    if url.is_empty() {
+                        anyhow::bail!(
+                            "MCP server '{}' with http transport requires non-empty url",
+                            server.name
+                        );
+                    }
+                    let parsed = reqwest::Url::parse(url).map_err(|_| {
+                        anyhow::anyhow!("MCP server '{}' has invalid url", server.name)
+                    })?;
+                    match parsed.scheme() {
+                        "http" | "https" => {}
+                        _ => {
+                            anyhow::bail!("MCP server '{}' url must use http or https", server.name)
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
 
 impl OpenAiConfig {
@@ -161,6 +326,7 @@ impl AppConfig {
 
         let config: AppConfig = toml::from_str(&contents)
             .map_err(|e| anyhow::anyhow!("Failed to parse config: {}", e))?;
+        config.mcp.validate()?;
 
         Ok(config)
     }
@@ -226,5 +392,208 @@ mod tests {
         };
         let err = cfg.resolve_base_url().unwrap_err().to_string();
         assert!(err.contains("base URL without '/chat/completions'"));
+    }
+
+    #[test]
+    fn mcp_default_enabled_and_empty_servers() {
+        let cfg = McpConfig::default();
+        assert!(cfg.enabled);
+        assert!(cfg.servers.is_empty());
+    }
+
+    #[test]
+    fn mcp_transport_default_is_stdio() {
+        let server = McpServerConfig {
+            name: "s".to_string(),
+            enabled: true,
+            transport: McpTransport::default(),
+            command: Some("cmd".to_string()),
+            args: vec![],
+            env: HashMap::new(),
+            cwd: None,
+            url: None,
+            headers: HashMap::new(),
+            tool_timeout_secs: None,
+            init_timeout_secs: None,
+        };
+        assert_eq!(server.transport, McpTransport::Stdio);
+    }
+
+    #[test]
+    fn mcp_validate_rejects_duplicate_names() {
+        let cfg = McpConfig {
+            enabled: true,
+            servers: vec![
+                McpServerConfig {
+                    name: "dup".to_string(),
+                    enabled: true,
+                    transport: McpTransport::Stdio,
+                    command: Some("echo".to_string()),
+                    args: vec![],
+                    env: HashMap::new(),
+                    cwd: None,
+                    url: None,
+                    headers: HashMap::new(),
+                    tool_timeout_secs: None,
+                    init_timeout_secs: None,
+                },
+                McpServerConfig {
+                    name: "dup".to_string(),
+                    enabled: true,
+                    transport: McpTransport::Http,
+                    command: None,
+                    args: vec![],
+                    env: HashMap::new(),
+                    cwd: None,
+                    url: Some("https://example.com/mcp".to_string()),
+                    headers: HashMap::new(),
+                    tool_timeout_secs: None,
+                    init_timeout_secs: None,
+                },
+            ],
+        };
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("duplicate MCP server name"));
+    }
+
+    #[test]
+    fn mcp_validate_rejects_missing_stdio_command() {
+        let cfg = McpConfig {
+            enabled: true,
+            servers: vec![McpServerConfig {
+                name: "stdio".to_string(),
+                enabled: true,
+                transport: McpTransport::Stdio,
+                command: None,
+                args: vec![],
+                env: HashMap::new(),
+                cwd: None,
+                url: None,
+                headers: HashMap::new(),
+                tool_timeout_secs: None,
+                init_timeout_secs: None,
+            }],
+        };
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("requires non-empty command"));
+    }
+
+    #[test]
+    fn mcp_validate_rejects_missing_http_url() {
+        let cfg = McpConfig {
+            enabled: true,
+            servers: vec![McpServerConfig {
+                name: "http".to_string(),
+                enabled: true,
+                transport: McpTransport::Http,
+                command: None,
+                args: vec![],
+                env: HashMap::new(),
+                cwd: None,
+                url: None,
+                headers: HashMap::new(),
+                tool_timeout_secs: None,
+                init_timeout_secs: None,
+            }],
+        };
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("requires non-empty url"));
+    }
+
+    #[test]
+    fn mcp_validate_resolves_header_placeholders() {
+        let env_name = "RIKABOT_TEST_MCP_TOKEN";
+        unsafe { std::env::set_var(env_name, "abc123") };
+
+        let mut headers = HashMap::new();
+        headers.insert(
+            "Authorization".to_string(),
+            "Bearer ${RIKABOT_TEST_MCP_TOKEN}".to_string(),
+        );
+
+        let cfg = McpConfig {
+            enabled: true,
+            servers: vec![McpServerConfig {
+                name: "http".to_string(),
+                enabled: true,
+                transport: McpTransport::Http,
+                command: None,
+                args: vec![],
+                env: HashMap::new(),
+                cwd: None,
+                url: Some("https://mcp.linear.app/mcp".to_string()),
+                headers,
+                tool_timeout_secs: None,
+                init_timeout_secs: None,
+            }],
+        };
+        assert!(cfg.validate().is_ok());
+
+        unsafe { std::env::remove_var(env_name) };
+    }
+
+    #[test]
+    fn mcp_header_resolution_fails_on_missing_env() {
+        let mut headers = HashMap::new();
+        headers.insert(
+            "Authorization".to_string(),
+            "Bearer ${RIKABOT_TEST_MCP_MISSING_TOKEN}".to_string(),
+        );
+
+        let server = McpServerConfig {
+            name: "http".to_string(),
+            enabled: true,
+            transport: McpTransport::Http,
+            command: None,
+            args: vec![],
+            env: HashMap::new(),
+            cwd: None,
+            url: Some("https://mcp.notion.com/mcp".to_string()),
+            headers,
+            tool_timeout_secs: None,
+            init_timeout_secs: None,
+        };
+        let err = server.resolved_http_headers().unwrap_err().to_string();
+        assert!(err.contains("not set for MCP header"));
+    }
+
+    #[test]
+    fn mcp_header_resolution_fails_on_invalid_placeholder() {
+        let mut headers = HashMap::new();
+        headers.insert("Authorization".to_string(), "Bearer ${BAD".to_string());
+
+        let server = McpServerConfig {
+            name: "http".to_string(),
+            enabled: true,
+            transport: McpTransport::Http,
+            command: None,
+            args: vec![],
+            env: HashMap::new(),
+            cwd: None,
+            url: Some("https://mcp.notion.com/mcp".to_string()),
+            headers,
+            tool_timeout_secs: None,
+            init_timeout_secs: None,
+        };
+        let err = server.resolved_http_headers().unwrap_err().to_string();
+        assert!(err.contains("unterminated env placeholder"));
+    }
+
+    #[test]
+    fn mcp_tool_timeout_is_capped() {
+        let server = McpServerConfig {
+            name: "cap".to_string(),
+            enabled: true,
+            transport: McpTransport::Stdio,
+            command: Some("echo".to_string()),
+            args: vec![],
+            env: HashMap::new(),
+            cwd: None,
+            url: None,
+            headers: HashMap::new(),
+            tool_timeout_secs: Some(9_999),
+            init_timeout_secs: None,
+        };
+        assert_eq!(server.resolved_tool_timeout_secs(), 600);
     }
 }
