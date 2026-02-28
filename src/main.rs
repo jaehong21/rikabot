@@ -1,6 +1,7 @@
 mod agent;
 mod config;
 mod gateway;
+mod prompt;
 mod providers;
 mod session;
 mod skills;
@@ -30,7 +31,7 @@ async fn main() -> Result<()> {
     // Create tool registry with default tools
     let tool_registry = tools::default_registry();
 
-    // Build system prompt with skills
+    // Resolve workspace dir
     let workspace_dir = config
         .workspace_dir
         .as_deref()
@@ -39,41 +40,37 @@ async fn main() -> Result<()> {
             std::env::var("HOME")
                 .ok()
                 .map(|h| PathBuf::from(h).join(".rika").join("workspace"))
-        });
+        })
+        .ok_or_else(|| {
+            anyhow::anyhow!("workspace_dir could not be resolved from config or HOME")
+        })?;
 
-    let system_prompt = if config.skills.enabled {
-        let skills_dir = workspace_dir.clone().map(|w| w.join("skills"));
-        let loader = skills::SkillsLoader::new(skills_dir);
-        let skills_section = loader.build_prompt_section();
-        if skills_section.is_empty() {
-            config.system_prompt.clone()
-        } else {
-            format!("{}\n\n---\n\n{}", config.system_prompt, skills_section)
-        }
-    } else {
-        config.system_prompt.clone()
-    };
+    let prompt_manager = Arc::new(prompt::PromptManager::new(
+        &workspace_dir,
+        config.system_prompt.clone(),
+        config.skills.enabled,
+        prompt::PromptLimits {
+            bootstrap_max_chars: config.prompt.bootstrap_max_chars,
+            bootstrap_total_max_chars: config.prompt.bootstrap_total_max_chars,
+        },
+    )?);
 
     // Create agent
     let agent = Arc::new(agent::Agent::new(
         provider,
         tool_registry,
-        system_prompt,
         config.model.clone(),
         config.temperature,
     ));
 
     // Create session manager
-    let workspace_dir = workspace_dir.ok_or_else(|| {
-        anyhow::anyhow!("workspace_dir could not be resolved from config or HOME")
-    })?;
     let sessions = Arc::new(tokio::sync::Mutex::new(session::SessionManager::new(
         &workspace_dir,
     )?));
 
     // Start gateway
     tracing::info!("Starting server on http://{}:{}", config.host, config.port);
-    gateway::serve(&config.host, config.port, agent, sessions).await?;
+    gateway::serve(&config.host, config.port, agent, sessions, prompt_manager).await?;
 
     Ok(())
 }

@@ -81,12 +81,25 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
 
             // Spawn the agent loop
             let agent = state.agent.clone();
+            let system_prompt = match state.prompt_manager.build_prompt() {
+                Ok(prompt) => prompt,
+                Err(err) => {
+                    let _ = send_error(
+                        &mut ws_sink,
+                        &format!("Failed to build system prompt: {}", err),
+                    )
+                    .await;
+                    continue;
+                }
+            };
             let mut history_clone = history.clone();
             let content_clone = content.clone();
             let previous_len = history_clone.len();
 
             let agent_handle = tokio::spawn(async move {
-                let result = agent.run(&mut history_clone, content_clone, event_tx).await;
+                let result = agent
+                    .run(system_prompt, &mut history_clone, content_clone, event_tx)
+                    .await;
                 (result, history_clone, previous_len)
             });
 
@@ -309,6 +322,7 @@ mod tests {
     use uuid::Uuid;
 
     use crate::agent::Agent;
+    use crate::prompt::{PromptLimits, PromptManager};
     use crate::providers::Provider;
     use crate::session::SessionManager;
     use crate::tools::ToolRegistry;
@@ -347,15 +361,30 @@ mod tests {
         let agent = Arc::new(Agent::new(
             provider,
             ToolRegistry::new(),
-            "system".to_string(),
             "model".to_string(),
             0.1,
         ));
         let sessions = Arc::new(tokio::sync::Mutex::new(
             SessionManager::new(workspace).expect("create sessions"),
         ));
+        let prompt_manager = Arc::new(
+            PromptManager::new(
+                workspace,
+                "system".to_string(),
+                false,
+                PromptLimits {
+                    bootstrap_max_chars: 20_000,
+                    bootstrap_total_max_chars: 150_000,
+                },
+            )
+            .expect("create prompt manager"),
+        );
 
-        AppState { agent, sessions }
+        AppState {
+            agent,
+            sessions,
+            prompt_manager,
+        }
     }
 
     #[tokio::test]

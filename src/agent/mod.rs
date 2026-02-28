@@ -52,7 +52,6 @@ pub enum AgentEvent {
 pub struct Agent {
     provider: Box<dyn Provider>,
     tool_registry: ToolRegistry,
-    system_prompt: String,
     model: String,
     temperature: f64,
 }
@@ -62,14 +61,12 @@ impl Agent {
     pub fn new(
         provider: Box<dyn Provider>,
         tool_registry: ToolRegistry,
-        system_prompt: String,
         model: String,
         temperature: f64,
     ) -> Self {
         Self {
             provider,
             tool_registry,
-            system_prompt,
             model,
             temperature,
         }
@@ -86,6 +83,7 @@ impl Agent {
     ///   - The loop continues until the LLM responds without tool calls, or [`MAX_ITERATIONS`]
     pub async fn run(
         &self,
+        system_prompt: String,
         history: &mut Vec<ChatMessage>,
         user_message: String,
         event_tx: mpsc::UnboundedSender<AgentEvent>,
@@ -107,12 +105,14 @@ impl Agent {
             .collect();
 
         // Run the iterative loop
-        self.run_loop(history, &tool_specs, &event_tx).await
+        self.run_loop(&system_prompt, history, &tool_specs, &event_tx)
+            .await
     }
 
     /// The inner agent loop: call LLM, handle tool calls, repeat.
     async fn run_loop(
         &self,
+        system_prompt: &str,
         history: &mut Vec<ChatMessage>,
         tool_specs: &[ToolSpec],
         tx: &mpsc::UnboundedSender<AgentEvent>,
@@ -122,7 +122,7 @@ impl Agent {
 
             // Build full message list: system prompt + conversation history
             let mut messages = Vec::with_capacity(1 + history.len());
-            messages.push(ChatMessage::system(&self.system_prompt));
+            messages.push(ChatMessage::system(system_prompt));
             messages.extend(history.iter().cloned());
 
             // Call LLM

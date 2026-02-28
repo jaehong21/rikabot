@@ -20,3 +20,7 @@ api_key = "xxx"
 
 # [skills]
 # enabled = true
+
+# [prompt]
+# bootstrap_max_chars = 20000 # default: 20000
+# bootstrap_total_max_chars = 150000 # default: 150000

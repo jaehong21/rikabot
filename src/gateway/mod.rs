@@ -15,6 +15,7 @@ use tower_http::{
 };
 
 use crate::agent::Agent;
+use crate::prompt::PromptManager;
 use crate::session::SessionManager;
 
 // ── AppState ────────────────────────────────────────────────────────────────
@@ -24,6 +25,7 @@ use crate::session::SessionManager;
 pub struct AppState {
     pub agent: Arc<Agent>,
     pub sessions: Arc<tokio::sync::Mutex<SessionManager>>,
+    pub prompt_manager: Arc<PromptManager>,
 }
 
 /// Health check endpoint.
@@ -55,8 +57,13 @@ pub async fn serve(
     port: u16,
     agent: Arc<Agent>,
     sessions: Arc<tokio::sync::Mutex<SessionManager>>,
+    prompt_manager: Arc<PromptManager>,
 ) -> Result<()> {
-    let state = AppState { agent, sessions };
+    let state = AppState {
+        agent,
+        sessions,
+        prompt_manager,
+    };
     let app = build_router(state);
 
     let addr = format!("{}:{}", host, port);

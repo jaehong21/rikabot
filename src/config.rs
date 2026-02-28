@@ -21,6 +21,8 @@ pub struct AppConfig {
     pub workspace_dir: Option<String>,
     #[serde(default)]
     pub skills: SkillsConfig,
+    #[serde(default)]
+    pub prompt: PromptConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -32,6 +34,23 @@ pub struct SkillsConfig {
 impl Default for SkillsConfig {
     fn default() -> Self {
         Self { enabled: true }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PromptConfig {
+    #[serde(default = "default_bootstrap_max_chars")]
+    pub bootstrap_max_chars: usize,
+    #[serde(default = "default_bootstrap_total_max_chars")]
+    pub bootstrap_total_max_chars: usize,
+}
+
+impl Default for PromptConfig {
+    fn default() -> Self {
+        Self {
+            bootstrap_max_chars: default_bootstrap_max_chars(),
+            bootstrap_total_max_chars: default_bootstrap_total_max_chars(),
+        }
     }
 }
 
@@ -71,6 +90,12 @@ fn default_temperature() -> f64 {
 }
 fn default_skills_enabled() -> bool {
     true
+}
+fn default_bootstrap_max_chars() -> usize {
+    20_000
+}
+fn default_bootstrap_total_max_chars() -> usize {
+    150_000
 }
 
 impl OpenAiConfig {
