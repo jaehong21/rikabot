@@ -26,22 +26,19 @@ api_key = "xxx"
 # bootstrap_total_max_chars = 150000 # default: 150000
 
 # [mcp]
-# enabled = true # default: true
+# enabled = true
 
 # [[mcp.servers]]
 # name = "filesystem"
-# transport = "stdio" # default: "stdio"
-# command = "npx"
+# transport = "stdio" # "stdio" | "http"
+# command = "bunx"
 # args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
-# tool_timeout_secs = 180 # default: 180, max: 600
-# init_timeout_secs = 30 # default: 30
-# enabled = true # default: true
+# tool_timeout_secs = 180 # max: 600
+# init_timeout_secs = 30
+# enabled = true
 
-# [[mcp.servers]]
-# name = "linear"
-# transport = "http" # default: "stdio"
-# url = "https://mcp.linear.app/mcp"
-# headers = { Authorization = "Bearer ${LINEAR_MCP_TOKEN}" }
-# tool_timeout_secs = 180 # default: 180, max: 600
-# init_timeout_secs = 30 # default: 30
-# enabled = true # default: true
+[[mcp.servers]]
+name = "linear"
+transport = "http"
+url = "https://mcp.linear.app/mcp"
+headers = { Authorization = "Bearer ${LINEAR_API_KEY}" }

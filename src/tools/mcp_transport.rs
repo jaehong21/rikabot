@@ -119,6 +119,7 @@ pub struct HttpTransport {
     url: String,
     client: reqwest::Client,
     headers: std::collections::HashMap<String, String>,
+    session_id: Option<String>,
 }
 
 impl HttpTransport {
@@ -139,8 +140,37 @@ impl HttpTransport {
             url: url.to_string(),
             client,
             headers,
+            session_id: None,
         })
     }
+}
+
+fn parse_sse_jsonrpc(body: &str) -> Result<JsonRpcResponse> {
+    for frame in body.split("\n\n") {
+        let mut data_lines = Vec::new();
+        for line in frame.lines() {
+            let trimmed = line.trim_end_matches('\r');
+            if let Some(rest) = trimmed.strip_prefix("data:") {
+                data_lines.push(rest.trim_start());
+            }
+        }
+
+        if data_lines.is_empty() {
+            continue;
+        }
+
+        let data = data_lines.join("\n");
+        let payload = data.trim();
+        if payload.is_empty() || payload == "[DONE]" {
+            continue;
+        }
+
+        if let Ok(resp) = serde_json::from_str::<JsonRpcResponse>(payload) {
+            return Ok(resp);
+        }
+    }
+
+    bail!("no JSON-RPC payload found in SSE response");
 }
 
 #[async_trait::async_trait]
@@ -155,10 +185,15 @@ impl McpTransportConn for HttpTransport {
             .client
             .post(&self.url)
             .body(body)
-            .header("Content-Type", "application/json");
+            .header("Content-Type", "application/json")
+            // Required by MCP Streamable HTTP transport.
+            .header("Accept", "application/json, text/event-stream");
 
         for (k, v) in &self.headers {
             req = req.header(k, v);
+        }
+        if let Some(session_id) = &self.session_id {
+            req = req.header("MCP-Session-Id", session_id);
         }
 
         let resp = timeout(Duration::from_secs(timeout_secs), req.send())
@@ -167,12 +202,53 @@ impl McpTransportConn for HttpTransport {
             .context("HTTP request to MCP server failed")?;
 
         if !resp.status().is_success() {
-            bail!("MCP server returned HTTP {}", resp.status());
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            if body.is_empty() {
+                bail!("MCP server returned HTTP {}", status);
+            }
+            bail!("MCP server returned HTTP {}: {}", status, body);
         }
 
+        if let Some(session_id) = resp
+            .headers()
+            .get("MCP-Session-Id")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+        {
+            self.session_id = Some(session_id);
+        }
+
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+
         let text = resp.text().await.context("failed to read MCP HTTP body")?;
-        serde_json::from_str(&text)
-            .with_context(|| format!("invalid JSON-RPC response from http transport: {text}"))
+        if text.trim().is_empty() && request.id.is_none() {
+            return Ok(JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                id: None,
+                result: Some(serde_json::json!({})),
+                error: None,
+            });
+        }
+
+        if content_type.starts_with("text/event-stream") {
+            return parse_sse_jsonrpc(&text).with_context(|| {
+                format!("invalid SSE JSON-RPC response from http transport: {text}")
+            });
+        }
+
+        serde_json::from_str(&text).with_context(|| {
+            format!(
+                "invalid JSON-RPC response from http transport (content-type: {}): {text}",
+                content_type
+            )
+        })
     }
 }
 
@@ -186,10 +262,15 @@ pub fn create_transport(config: &McpServerConfig) -> Result<Box<dyn McpTransport
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::extract::Request;
+    use axum::http::{HeaderValue, StatusCode};
+    use axum::response::IntoResponse;
     use axum::routing::post;
     use axum::Router;
     use std::collections::HashMap;
+    use std::sync::Arc;
     use tokio::net::TcpListener;
+    use tokio::sync::Mutex;
 
     fn base_server(name: &str) -> McpServerConfig {
         McpServerConfig {
@@ -251,6 +332,139 @@ mod tests {
         let req = JsonRpcRequest::new(1, "tools/list", serde_json::json!({}));
         let err = t.send_and_recv(&req, 3).await.unwrap_err().to_string();
         assert!(err.contains("MCP server returned HTTP 500"));
+
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn http_transport_sends_required_accept_header() {
+        let app = Router::new().route(
+            "/mcp",
+            post(|req: Request| async move {
+                let accept = req
+                    .headers()
+                    .get(reqwest::header::ACCEPT)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("");
+
+                if !accept.contains("application/json") || !accept.contains("text/event-stream") {
+                    return StatusCode::NOT_ACCEPTABLE.into_response();
+                }
+
+                let body = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": { "ok": true }
+                });
+                (StatusCode::OK, body.to_string()).into_response()
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let mut cfg = base_server("http_accept");
+        cfg.transport = McpTransport::Http;
+        cfg.command = None;
+        cfg.url = Some(format!("http://{addr}/mcp"));
+
+        let mut t = HttpTransport::new(&cfg).unwrap();
+        let req = JsonRpcRequest::new(1, "tools/list", serde_json::json!({}));
+        let resp = t.send_and_recv(&req, 3).await.unwrap();
+        assert_eq!(resp.result.unwrap()["ok"], true);
+
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn http_transport_reuses_mcp_session_id() {
+        let seen_session = Arc::new(Mutex::new(Vec::<String>::new()));
+        let seen_session_cloned = seen_session.clone();
+
+        let app = Router::new().route(
+            "/mcp",
+            post(move |req: Request| {
+                let seen_session_cloned = seen_session_cloned.clone();
+                async move {
+                    let session = req
+                        .headers()
+                        .get("MCP-Session-Id")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("")
+                        .to_string();
+                    seen_session_cloned.lock().await.push(session.clone());
+
+                    let body = serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": { "ok": true }
+                    });
+                    let mut resp =
+                        axum::response::Response::new(axum::body::Body::from(body.to_string()));
+                    if session.is_empty() {
+                        resp.headers_mut()
+                            .insert("MCP-Session-Id", HeaderValue::from_static("sess-123"));
+                    }
+                    resp
+                }
+            }),
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let mut cfg = base_server("http_session");
+        cfg.transport = McpTransport::Http;
+        cfg.command = None;
+        cfg.url = Some(format!("http://{addr}/mcp"));
+
+        let mut t = HttpTransport::new(&cfg).unwrap();
+        let req = JsonRpcRequest::new(1, "initialize", serde_json::json!({}));
+        let _ = t.send_and_recv(&req, 3).await.unwrap();
+        let req2 = JsonRpcRequest::new(1, "tools/list", serde_json::json!({}));
+        let _ = t.send_and_recv(&req2, 3).await.unwrap();
+
+        let seen = seen_session.lock().await.clone();
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[0], "");
+        assert_eq!(seen[1], "sess-123");
+
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn http_transport_parses_sse_jsonrpc_response() {
+        let app = Router::new().route(
+            "/mcp",
+            post(|| async move {
+                let sse = "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true}}\n\n";
+                (
+                    StatusCode::OK,
+                    [(reqwest::header::CONTENT_TYPE.as_str(), "text/event-stream")],
+                    sse,
+                )
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let mut cfg = base_server("http_sse");
+        cfg.transport = McpTransport::Http;
+        cfg.command = None;
+        cfg.url = Some(format!("http://{addr}/mcp"));
+
+        let mut t = HttpTransport::new(&cfg).unwrap();
+        let req = JsonRpcRequest::new(1, "tools/list", serde_json::json!({}));
+        let resp = t.send_and_recv(&req, 3).await.unwrap();
+        assert_eq!(resp.result.unwrap()["ok"], true);
 
         task.abort();
     }
