@@ -9,6 +9,8 @@ use axum::{
     routing::{get, get_service},
     Router,
 };
+use serde_json::Value;
+use tokio::{sync::mpsc, task::JoinHandle};
 use tower_http::{
     services::{ServeDir, ServeFile},
     timeout::TimeoutLayer,
@@ -20,12 +22,36 @@ use crate::session::SessionManager;
 
 // ── AppState ────────────────────────────────────────────────────────────────
 
+pub struct ActiveRunState {
+    pub run_id: u64,
+    pub session_id: String,
+    pub events: Vec<Value>,
+    pub subscribers: Vec<mpsc::UnboundedSender<Value>>,
+    pub agent_task: JoinHandle<()>,
+    pub event_task: JoinHandle<()>,
+}
+
+pub struct RunManager {
+    pub next_run_id: u64,
+    pub active: Option<ActiveRunState>,
+}
+
+impl Default for RunManager {
+    fn default() -> Self {
+        Self {
+            next_run_id: 1,
+            active: None,
+        }
+    }
+}
+
 /// Shared application state passed to all handlers.
 #[derive(Clone)]
 pub struct AppState {
     pub agent: Arc<Agent>,
     pub sessions: Arc<tokio::sync::Mutex<SessionManager>>,
     pub prompt_manager: Arc<PromptManager>,
+    pub runs: Arc<tokio::sync::Mutex<RunManager>>,
 }
 
 /// Health check endpoint.
@@ -63,6 +89,7 @@ pub async fn serve(
         agent,
         sessions,
         prompt_manager,
+        runs: Arc::new(tokio::sync::Mutex::new(RunManager::default())),
     };
     let app = build_router(state);
 

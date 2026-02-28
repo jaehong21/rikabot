@@ -7,11 +7,11 @@ use axum::{
 };
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
+use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
-use tokio::task::JoinHandle;
 
 use crate::agent::AgentEvent;
-use crate::gateway::AppState;
+use crate::gateway::{ActiveRunState, AppState};
 use crate::providers::ChatMessage;
 
 /// Inbound message from the client.
@@ -30,18 +30,6 @@ struct RunOutcome {
     previous_len: usize,
 }
 
-enum RunSignal {
-    Event { run_id: u64, event: AgentEvent },
-    Completed { run_id: u64, outcome: RunOutcome },
-}
-
-struct ActiveRun {
-    run_id: u64,
-    session_id: String,
-    agent_task: JoinHandle<()>,
-    event_task: JoinHandle<()>,
-}
-
 /// Axum handler that upgrades an HTTP request to a WebSocket connection.
 pub async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
     ws.on_upgrade(move |socket| handle_socket(socket, state))
@@ -50,7 +38,7 @@ pub async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> 
 /// Handle a single WebSocket connection.
 async fn handle_socket(socket: WebSocket, state: AppState) {
     let (mut ws_sink, mut ws_stream) = socket.split();
-    let (run_signal_tx, mut run_signal_rx) = mpsc::unbounded_channel::<RunSignal>();
+    let (run_signal_tx, mut run_signal_rx) = mpsc::unbounded_channel::<Value>();
 
     let (mut current_session_id, mut history) = match hydrate_current_thread(&state).await {
         Ok((sid, initial_history)) => {
@@ -75,8 +63,21 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         }
     };
 
-    let mut active_run: Option<ActiveRun> = None;
-    let mut next_run_id: u64 = 1;
+    if let Err(err) = attach_to_active_run(
+        &state,
+        &current_session_id,
+        run_signal_tx.clone(),
+        &mut ws_sink,
+    )
+    .await
+    {
+        let _ = send_error(
+            &mut ws_sink,
+            &format!("Failed to reattach active run: {}", err),
+        )
+        .await;
+        return;
+    }
 
     loop {
         tokio::select! {
@@ -106,7 +107,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
 
                 match client_msg.msg_type.as_str() {
                     "message" => {
-                        if active_run.is_some() {
+                        if has_active_run(&state).await {
                             let _ = send_error(&mut ws_sink, "A run is already active. Stop it before sending another message.").await;
                             continue;
                         }
@@ -116,18 +117,28 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                             _ => continue,
                         };
 
+                        let base_history = match load_history_for_session(&state, &current_session_id).await {
+                            Ok(history) => history,
+                            Err(err) => {
+                                let _ = send_error(
+                                    &mut ws_sink,
+                                    &format!("Failed to load session history: {}", err),
+                                )
+                                .await;
+                                continue;
+                            }
+                        };
+
                         match spawn_active_run(
                             &state,
                             run_signal_tx.clone(),
-                            next_run_id,
                             &current_session_id,
-                            &history,
+                            &base_history,
                             content,
-                        ) {
-                            Ok(run) => {
-                                active_run = Some(run);
-                                next_run_id = next_run_id.saturating_add(1);
-                            }
+                        )
+                        .await
+                        {
+                            Ok(()) => {}
                             Err(err) => {
                                 let _ = send_error(
                                     &mut ws_sink,
@@ -138,16 +149,13 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                         }
                     }
                     "kill_switch" => {
-                        if let Some(run) = active_run.take() {
-                            let stopped_session = run.session_id.clone();
-                            abort_active_run(run).await;
-                            let _ = send_stopped(&mut ws_sink, "user_cancelled", Some(&stopped_session)).await;
+                        if stop_active_run(&state, "user_cancelled", Some(&current_session_id)).await {
                         } else {
                             let _ = send_stopped(&mut ws_sink, "no_active_run", Some(&current_session_id)).await;
                         }
                     }
                     _ => {
-                        if active_run.is_some() && is_thread_mutating_command(&client_msg.msg_type) {
+                        if has_active_run(&state).await && is_thread_mutating_command(&client_msg.msg_type) {
                             let _ = send_error(
                                 &mut ws_sink,
                                 "Cannot modify threads while a run is active. Stop the run first.",
@@ -165,12 +173,41 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                         .await
                         {
                             Ok(Some(event)) => {
+                                let switched_to = event
+                                    .get("type")
+                                    .and_then(|v| v.as_str())
+                                    .filter(|t| *t == "thread_switched")
+                                    .and_then(|_| event.get("session_id"))
+                                    .and_then(|v| v.as_str())
+                                    .map(str::to_string);
+
                                 if ws_sink
                                     .send(Message::text(event.to_string()))
                                     .await
-                                    .is_err()
+                                .is_err()
                                 {
                                     break;
+                                }
+
+                                if let Some(switched_session_id) = switched_to {
+                                    if let Err(err) = attach_to_active_run(
+                                        &state,
+                                        &switched_session_id,
+                                        run_signal_tx.clone(),
+                                        &mut ws_sink,
+                                    )
+                                    .await
+                                    {
+                                        let _ = send_error(
+                                            &mut ws_sink,
+                                            &format!(
+                                                "Failed to attach run after thread switch: {}",
+                                                err
+                                            ),
+                                        )
+                                        .await;
+                                        break;
+                                    }
                                 }
                             }
                             Ok(None) => {}
@@ -182,48 +219,51 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                 }
             }
             signal = run_signal_rx.recv() => {
-                let Some(signal) = signal else {
+                let Some(payload) = signal else {
                     break;
                 };
 
-                let should_continue = handle_run_signal(
-                    signal,
-                    &mut active_run,
-                    &mut ws_sink,
-                    &state,
-                    &current_session_id,
-                    &mut history,
-                )
-                .await;
-
-                if !should_continue {
+                if ws_sink
+                    .send(Message::text(payload.to_string()))
+                    .await
+                    .is_err()
+                {
                     break;
                 }
             }
         }
     }
 
-    if let Some(run) = active_run.take() {
-        abort_active_run(run).await;
-    }
-
     tracing::debug!("WebSocket connection closed");
 }
 
-fn spawn_active_run(
+async fn spawn_active_run(
     state: &AppState,
-    run_signal_tx: mpsc::UnboundedSender<RunSignal>,
-    run_id: u64,
+    run_signal_tx: mpsc::UnboundedSender<Value>,
     session_id: &str,
     history: &[ChatMessage],
     content: String,
-) -> anyhow::Result<ActiveRun> {
+) -> anyhow::Result<()> {
     let system_prompt = state.prompt_manager.build_prompt()?;
+    let mut runs_guard = state.runs.lock().await;
+    if runs_guard.active.is_some() {
+        return Err(anyhow::anyhow!(
+            "A run is already active. Stop it before sending another message."
+        ));
+    }
+
+    let run_id = runs_guard.next_run_id;
+    runs_guard.next_run_id = runs_guard.next_run_id.saturating_add(1);
+
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<AgentEvent>();
     let (outcome_tx, outcome_rx) = oneshot::channel::<RunOutcome>();
     let agent = state.agent.clone();
+    let sessions = state.sessions.clone();
+    let run_store = state.runs.clone();
     let mut history_clone = history.to_vec();
     let previous_len = history_clone.len();
+    let content_for_event = content.clone();
+    let session_id_owned = session_id.to_string();
 
     let agent_task = tokio::spawn(async move {
         let result = agent
@@ -236,99 +276,161 @@ fn spawn_active_run(
         });
     });
 
-    let event_task_tx = run_signal_tx;
+    let session_id_for_task = session_id_owned.clone();
     let event_task = tokio::spawn(async move {
         while let Some(event) = event_rx.recv().await {
-            if event_task_tx
-                .send(RunSignal::Event { run_id, event })
-                .is_err()
-            {
-                break;
-            }
+            let payload = match serde_json::to_value(&event) {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+            broadcast_run_payload(&run_store, run_id, payload).await;
         }
 
         if let Ok(outcome) = outcome_rx.await {
-            let _ = event_task_tx.send(RunSignal::Completed { run_id, outcome });
+            if matches!(outcome.result, Ok(()))
+                && outcome.previous_len <= outcome.updated_history.len()
+            {
+                let appended = &outcome.updated_history[outcome.previous_len..];
+                let append_result = {
+                    let mut sessions = sessions.lock().await;
+                    sessions.append_messages(&session_id_for_task, appended)
+                };
+                if let Err(err) = append_result {
+                    let payload = serde_json::json!({
+                        "type": "error",
+                        "message": format!("Failed to persist session messages: {}", err),
+                    });
+                    broadcast_run_payload(&run_store, run_id, payload).await;
+                } else {
+                    let thread_list_payload = {
+                        let sessions = sessions.lock().await;
+                        serde_json::json!({
+                            "type": "thread_list",
+                            "current_session_id": sessions.current_session_id(),
+                            "sessions": sessions.list_sessions(),
+                        })
+                    };
+                    broadcast_run_payload(&run_store, run_id, thread_list_payload).await;
+                }
+            }
         }
+
+        clear_active_run(&run_store, run_id).await;
     });
 
-    Ok(ActiveRun {
+    let user_payload = serde_json::json!({
+        "type": "user_message",
+        "content": content_for_event,
+    });
+    let _ = run_signal_tx.send(user_payload.clone());
+    runs_guard.active = Some(ActiveRunState {
         run_id,
-        session_id: session_id.to_string(),
+        session_id: session_id_owned,
+        events: vec![user_payload],
+        subscribers: vec![run_signal_tx],
         agent_task,
         event_task,
-    })
+    });
+
+    Ok(())
 }
 
-async fn abort_active_run(run: ActiveRun) {
+async fn broadcast_run_payload(
+    runs: &std::sync::Arc<tokio::sync::Mutex<crate::gateway::RunManager>>,
+    run_id: u64,
+    payload: Value,
+) {
+    let mut runs = runs.lock().await;
+    let Some(active) = runs.active.as_mut() else {
+        return;
+    };
+    if active.run_id != run_id {
+        return;
+    }
+
+    active.events.push(payload.clone());
+    active
+        .subscribers
+        .retain(|sub| sub.send(payload.clone()).is_ok());
+}
+
+async fn clear_active_run(
+    runs: &std::sync::Arc<tokio::sync::Mutex<crate::gateway::RunManager>>,
+    run_id: u64,
+) {
+    let mut runs = runs.lock().await;
+    let remove = runs.active.as_ref().is_some_and(|run| run.run_id == run_id);
+    if remove {
+        runs.active = None;
+    }
+}
+
+async fn load_history_for_session(
+    state: &AppState,
+    session_id: &str,
+) -> anyhow::Result<Vec<ChatMessage>> {
+    let mut sessions = state.sessions.lock().await;
+    sessions.load_history(session_id)
+}
+
+async fn has_active_run(state: &AppState) -> bool {
+    let runs = state.runs.lock().await;
+    runs.active.is_some()
+}
+
+async fn attach_to_active_run(
+    state: &AppState,
+    session_id: &str,
+    run_signal_tx: mpsc::UnboundedSender<Value>,
+    ws_sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+) -> anyhow::Result<()> {
+    let replay = {
+        let mut runs = state.runs.lock().await;
+        let Some(active) = runs.active.as_mut() else {
+            return Ok(());
+        };
+        if active.session_id != session_id {
+            return Ok(());
+        }
+        active.subscribers.push(run_signal_tx);
+        active.events.clone()
+    };
+
+    for payload in replay {
+        ws_sink.send(Message::text(payload.to_string())).await?;
+    }
+
+    Ok(())
+}
+
+async fn stop_active_run(state: &AppState, reason: &str, session_id: Option<&str>) -> bool {
+    let run = {
+        let mut runs = state.runs.lock().await;
+        let Some(active) = runs.active.take() else {
+            return false;
+        };
+        if let Some(requested_sid) = session_id {
+            if active.session_id != requested_sid {
+                runs.active = Some(active);
+                return false;
+            }
+        }
+        active
+    };
+
+    let payload = serde_json::json!({
+        "type": "stopped",
+        "reason": reason,
+        "session_id": run.session_id,
+    });
+    for sub in &run.subscribers {
+        let _ = sub.send(payload.clone());
+    }
+
     run.agent_task.abort();
     run.event_task.abort();
     let _ = run.agent_task.await;
     let _ = run.event_task.await;
-}
-
-async fn handle_run_signal(
-    signal: RunSignal,
-    active_run: &mut Option<ActiveRun>,
-    ws_sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
-    state: &AppState,
-    current_session_id: &str,
-    history: &mut Vec<ChatMessage>,
-) -> bool {
-    match signal {
-        RunSignal::Event { run_id, event } => {
-            if active_run.as_ref().map_or(true, |run| run.run_id != run_id) {
-                return true;
-            }
-
-            let json = match serde_json::to_string(&event) {
-                Ok(j) => j,
-                Err(_) => return true,
-            };
-            if ws_sink.send(Message::text(json)).await.is_err() {
-                return false;
-            }
-        }
-        RunSignal::Completed { run_id, outcome } => {
-            if active_run.as_ref().map_or(true, |run| run.run_id != run_id) {
-                return true;
-            }
-
-            let finished_run = active_run.take().expect("active run exists");
-            let run_session_id = finished_run.session_id.clone();
-
-            let _ = finished_run.agent_task.await;
-            let _ = finished_run.event_task.await;
-
-            match outcome.result {
-                Ok(()) => {
-                    if outcome.previous_len <= outcome.updated_history.len() {
-                        let appended = &outcome.updated_history[outcome.previous_len..];
-                        let append_result = {
-                            let mut sessions = state.sessions.lock().await;
-                            sessions.append_messages(&run_session_id, appended)
-                        };
-                        if let Err(err) = append_result {
-                            let _ = send_error(
-                                ws_sink,
-                                &format!("Failed to persist session messages: {}", err),
-                            )
-                            .await;
-                        }
-                    }
-
-                    if run_session_id == current_session_id {
-                        *history = outcome.updated_history;
-                    }
-                    let _ = send_thread_list(ws_sink, state).await;
-                }
-                Err(e) => {
-                    let _ = send_error(ws_sink, &format!("Agent error: {}", e)).await;
-                }
-            }
-        }
-    }
-
     true
 }
 
@@ -574,6 +676,9 @@ mod tests {
             agent,
             sessions,
             prompt_manager,
+            runs: Arc::new(tokio::sync::Mutex::new(
+                crate::gateway::RunManager::default(),
+            )),
         }
     }
 

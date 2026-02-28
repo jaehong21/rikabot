@@ -70,6 +70,7 @@
   };
 
   type ServerEvent =
+    | { type: 'user_message'; content?: string }
     | { type: 'chunk'; content?: string }
     | { type: 'tool_call_start'; name?: string; args?: unknown }
     | { type: 'tool_call_result'; name?: string; output?: string; success?: boolean }
@@ -272,6 +273,9 @@
 
   function handleEvent(event: ServerEvent): void {
     switch (event.type) {
+      case 'user_message':
+        onUserMessage(event.content ?? '');
+        return;
       case 'chunk':
         onChunk(event.content ?? '');
         return;
@@ -449,6 +453,13 @@
   }
 
   function onChunk(text: string): void {
+    if (!isWaiting) {
+      setWaiting(true);
+    }
+    if (!activeResponseStartedAt) {
+      activeResponseStartedAt = Date.now();
+    }
+
     if (!currentAssistantId) {
       const entry: MessageEntry = {
         id: nextId(),
@@ -475,6 +486,13 @@
   }
 
   function onToolCallStart(name: string, args: unknown): void {
+    if (!isWaiting) {
+      setWaiting(true);
+    }
+    if (!activeResponseStartedAt) {
+      activeResponseStartedAt = Date.now();
+    }
+
     finishCurrentBubble();
     activeToolCallCount += 1;
 
@@ -496,6 +514,13 @@
   }
 
   function onToolCallResult(name: string, output: string, success: boolean): void {
+    if (!isWaiting) {
+      setWaiting(true);
+    }
+    if (!activeResponseStartedAt) {
+      activeResponseStartedAt = Date.now();
+    }
+
     if (success) {
       activeToolSuccessCount += 1;
     } else {
@@ -587,6 +612,30 @@
 
     resetActiveResponseState();
     setWaiting(false);
+    scrollToBottom();
+  }
+
+  function onUserMessage(text: string): void {
+    if (!text.trim()) {
+      return;
+    }
+
+    entries = [
+      ...entries,
+      {
+        id: nextId(),
+        kind: 'message',
+        role: 'user',
+        text
+      }
+    ];
+
+    activeResponseStartedAt = Date.now();
+    activeToolCallCount = 0;
+    activeToolSuccessCount = 0;
+    activeToolFailureCount = 0;
+    setWaiting(true);
+    finishCurrentBubble();
     scrollToBottom();
   }
 
@@ -909,28 +958,12 @@
       return;
     }
 
-    const userEntry: MessageEntry = {
-      id: nextId(),
-      kind: 'message',
-      role: 'user',
-      text
-    };
-    entries = [...entries, userEntry];
-
     ws.send(
       JSON.stringify({
         type: 'message',
         content: text
       })
     );
-
-    activeResponseStartedAt = Date.now();
-    activeToolCallCount = 0;
-    activeToolSuccessCount = 0;
-    activeToolFailureCount = 0;
-    setWaiting(true);
-    finishCurrentBubble();
-    scrollToBottom();
   }
 
   function onComposerKeydown(event: KeyboardEvent): void {
