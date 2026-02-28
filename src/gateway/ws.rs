@@ -7,7 +7,8 @@ use axum::{
 };
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
+use tokio::task::JoinHandle;
 
 use crate::agent::AgentEvent;
 use crate::gateway::AppState;
@@ -23,6 +24,24 @@ struct ClientMessage {
     display_name: Option<String>,
 }
 
+struct RunOutcome {
+    result: anyhow::Result<()>,
+    updated_history: Vec<ChatMessage>,
+    previous_len: usize,
+}
+
+enum RunSignal {
+    Event { run_id: u64, event: AgentEvent },
+    Completed { run_id: u64, outcome: RunOutcome },
+}
+
+struct ActiveRun {
+    run_id: u64,
+    session_id: String,
+    agent_task: JoinHandle<()>,
+    event_task: JoinHandle<()>,
+}
+
 /// Axum handler that upgrades an HTTP request to a WebSocket connection.
 pub async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
     ws.on_upgrade(move |socket| handle_socket(socket, state))
@@ -31,6 +50,7 @@ pub async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> 
 /// Handle a single WebSocket connection.
 async fn handle_socket(socket: WebSocket, state: AppState) {
     let (mut ws_sink, mut ws_stream) = socket.split();
+    let (run_signal_tx, mut run_signal_rx) = mpsc::unbounded_channel::<RunSignal>();
 
     let (mut current_session_id, mut history) = match hydrate_current_thread(&state).await {
         Ok((sid, initial_history)) => {
@@ -55,116 +75,261 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         }
     };
 
-    while let Some(Ok(msg)) = ws_stream.next().await {
-        let text = match msg {
-            Message::Text(t) => t,
-            Message::Close(_) => break,
-            _ => continue,
-        };
+    let mut active_run: Option<ActiveRun> = None;
+    let mut next_run_id: u64 = 1;
 
-        let client_msg: ClientMessage = match serde_json::from_str(&text) {
-            Ok(m) => m,
-            Err(e) => {
-                let _ = send_error(&mut ws_sink, &format!("Invalid message format: {}", e)).await;
-                continue;
-            }
-        };
-
-        if client_msg.msg_type == "message" {
-            let content = match client_msg.content {
-                Some(c) if !c.trim().is_empty() => c,
-                _ => continue,
-            };
-
-            // Create a channel for agent events
-            let (event_tx, mut event_rx) = mpsc::unbounded_channel::<AgentEvent>();
-
-            // Spawn the agent loop
-            let agent = state.agent.clone();
-            let system_prompt = match state.prompt_manager.build_prompt() {
-                Ok(prompt) => prompt,
-                Err(err) => {
-                    let _ = send_error(
-                        &mut ws_sink,
-                        &format!("Failed to build system prompt: {}", err),
-                    )
-                    .await;
-                    continue;
-                }
-            };
-            let mut history_clone = history.clone();
-            let content_clone = content.clone();
-            let previous_len = history_clone.len();
-
-            let agent_handle = tokio::spawn(async move {
-                let result = agent
-                    .run(system_prompt, &mut history_clone, content_clone, event_tx)
-                    .await;
-                (result, history_clone, previous_len)
-            });
-
-            // Forward agent events to WebSocket
-            while let Some(event) = event_rx.recv().await {
-                let json = match serde_json::to_string(&event) {
-                    Ok(j) => j,
-                    Err(_) => continue,
+    loop {
+        tokio::select! {
+            ws_item = ws_stream.next() => {
+                let msg = match ws_item {
+                    Some(Ok(msg)) => msg,
+                    Some(Err(err)) => {
+                        tracing::debug!("WebSocket read error: {}", err);
+                        break;
+                    }
+                    None => break,
                 };
-                if ws_sink.send(Message::text(json)).await.is_err() {
+
+                let text = match msg {
+                    Message::Text(t) => t,
+                    Message::Close(_) => break,
+                    _ => continue,
+                };
+
+                let client_msg: ClientMessage = match serde_json::from_str(&text) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        let _ = send_error(&mut ws_sink, &format!("Invalid message format: {}", e)).await;
+                        continue;
+                    }
+                };
+
+                match client_msg.msg_type.as_str() {
+                    "message" => {
+                        if active_run.is_some() {
+                            let _ = send_error(&mut ws_sink, "A run is already active. Stop it before sending another message.").await;
+                            continue;
+                        }
+
+                        let content = match client_msg.content {
+                            Some(c) if !c.trim().is_empty() => c,
+                            _ => continue,
+                        };
+
+                        match spawn_active_run(
+                            &state,
+                            run_signal_tx.clone(),
+                            next_run_id,
+                            &current_session_id,
+                            &history,
+                            content,
+                        ) {
+                            Ok(run) => {
+                                active_run = Some(run);
+                                next_run_id = next_run_id.saturating_add(1);
+                            }
+                            Err(err) => {
+                                let _ = send_error(
+                                    &mut ws_sink,
+                                    &format!("Failed to start agent run: {}", err),
+                                )
+                                .await;
+                            }
+                        }
+                    }
+                    "kill_switch" => {
+                        if let Some(run) = active_run.take() {
+                            let stopped_session = run.session_id.clone();
+                            abort_active_run(run).await;
+                            let _ = send_stopped(&mut ws_sink, "user_cancelled", Some(&stopped_session)).await;
+                        } else {
+                            let _ = send_stopped(&mut ws_sink, "no_active_run", Some(&current_session_id)).await;
+                        }
+                    }
+                    _ => {
+                        if active_run.is_some() && is_thread_mutating_command(&client_msg.msg_type) {
+                            let _ = send_error(
+                                &mut ws_sink,
+                                "Cannot modify threads while a run is active. Stop the run first.",
+                            )
+                            .await;
+                            continue;
+                        }
+
+                        match handle_thread_command(
+                            &state,
+                            &client_msg,
+                            &mut current_session_id,
+                            &mut history,
+                        )
+                        .await
+                        {
+                            Ok(Some(event)) => {
+                                if ws_sink
+                                    .send(Message::text(event.to_string()))
+                                    .await
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                            }
+                            Ok(None) => {}
+                            Err(err) => {
+                                let _ = send_error(&mut ws_sink, &err.to_string()).await;
+                            }
+                        }
+                    }
+                }
+            }
+            signal = run_signal_rx.recv() => {
+                let Some(signal) = signal else {
+                    break;
+                };
+
+                let should_continue = handle_run_signal(
+                    signal,
+                    &mut active_run,
+                    &mut ws_sink,
+                    &state,
+                    &current_session_id,
+                    &mut history,
+                )
+                .await;
+
+                if !should_continue {
                     break;
                 }
             }
+        }
+    }
 
-            // Wait for the agent to finish and update history
-            match agent_handle.await {
-                Ok((Ok(()), updated_history, previous_len)) => {
-                    if previous_len <= updated_history.len() {
-                        let appended = &updated_history[previous_len..];
+    if let Some(run) = active_run.take() {
+        abort_active_run(run).await;
+    }
+
+    tracing::debug!("WebSocket connection closed");
+}
+
+fn spawn_active_run(
+    state: &AppState,
+    run_signal_tx: mpsc::UnboundedSender<RunSignal>,
+    run_id: u64,
+    session_id: &str,
+    history: &[ChatMessage],
+    content: String,
+) -> anyhow::Result<ActiveRun> {
+    let system_prompt = state.prompt_manager.build_prompt()?;
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel::<AgentEvent>();
+    let (outcome_tx, outcome_rx) = oneshot::channel::<RunOutcome>();
+    let agent = state.agent.clone();
+    let mut history_clone = history.to_vec();
+    let previous_len = history_clone.len();
+
+    let agent_task = tokio::spawn(async move {
+        let result = agent
+            .run(system_prompt, &mut history_clone, content, event_tx)
+            .await;
+        let _ = outcome_tx.send(RunOutcome {
+            result,
+            updated_history: history_clone,
+            previous_len,
+        });
+    });
+
+    let event_task_tx = run_signal_tx;
+    let event_task = tokio::spawn(async move {
+        while let Some(event) = event_rx.recv().await {
+            if event_task_tx
+                .send(RunSignal::Event { run_id, event })
+                .is_err()
+            {
+                break;
+            }
+        }
+
+        if let Ok(outcome) = outcome_rx.await {
+            let _ = event_task_tx.send(RunSignal::Completed { run_id, outcome });
+        }
+    });
+
+    Ok(ActiveRun {
+        run_id,
+        session_id: session_id.to_string(),
+        agent_task,
+        event_task,
+    })
+}
+
+async fn abort_active_run(run: ActiveRun) {
+    run.agent_task.abort();
+    run.event_task.abort();
+    let _ = run.agent_task.await;
+    let _ = run.event_task.await;
+}
+
+async fn handle_run_signal(
+    signal: RunSignal,
+    active_run: &mut Option<ActiveRun>,
+    ws_sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    state: &AppState,
+    current_session_id: &str,
+    history: &mut Vec<ChatMessage>,
+) -> bool {
+    match signal {
+        RunSignal::Event { run_id, event } => {
+            if active_run.as_ref().map_or(true, |run| run.run_id != run_id) {
+                return true;
+            }
+
+            let json = match serde_json::to_string(&event) {
+                Ok(j) => j,
+                Err(_) => return true,
+            };
+            if ws_sink.send(Message::text(json)).await.is_err() {
+                return false;
+            }
+        }
+        RunSignal::Completed { run_id, outcome } => {
+            if active_run.as_ref().map_or(true, |run| run.run_id != run_id) {
+                return true;
+            }
+
+            let finished_run = active_run.take().expect("active run exists");
+            let run_session_id = finished_run.session_id.clone();
+
+            let _ = finished_run.agent_task.await;
+            let _ = finished_run.event_task.await;
+
+            match outcome.result {
+                Ok(()) => {
+                    if outcome.previous_len <= outcome.updated_history.len() {
+                        let appended = &outcome.updated_history[outcome.previous_len..];
                         let append_result = {
                             let mut sessions = state.sessions.lock().await;
-                            sessions.append_messages(&current_session_id, appended)
+                            sessions.append_messages(&run_session_id, appended)
                         };
                         if let Err(err) = append_result {
                             let _ = send_error(
-                                &mut ws_sink,
+                                ws_sink,
                                 &format!("Failed to persist session messages: {}", err),
                             )
                             .await;
                         }
                     }
-                    history = updated_history;
-                    let _ = send_thread_list(&mut ws_sink, &state).await;
-                }
-                Ok((Err(e), _, _)) => {
-                    let _ = send_error(&mut ws_sink, &format!("Agent error: {}", e)).await;
+
+                    if run_session_id == current_session_id {
+                        *history = outcome.updated_history;
+                    }
+                    let _ = send_thread_list(ws_sink, state).await;
                 }
                 Err(e) => {
-                    let _ = send_error(&mut ws_sink, &format!("Internal error: {}", e)).await;
+                    let _ = send_error(ws_sink, &format!("Agent error: {}", e)).await;
                 }
-            }
-
-            continue;
-        }
-
-        match handle_thread_command(&state, &client_msg, &mut current_session_id, &mut history)
-            .await
-        {
-            Ok(Some(event)) => {
-                if ws_sink
-                    .send(Message::text(event.to_string()))
-                    .await
-                    .is_err()
-                {
-                    break;
-                }
-            }
-            Ok(None) => {}
-            Err(err) => {
-                let _ = send_error(&mut ws_sink, &err.to_string()).await;
             }
         }
     }
 
-    tracing::debug!("WebSocket connection closed");
+    true
 }
 
 async fn hydrate_current_thread(state: &AppState) -> anyhow::Result<(String, Vec<ChatMessage>)> {
@@ -215,6 +380,24 @@ async fn send_error(
     ws_sink
         .send(Message::text(
             serde_json::json!({"type": "error", "message": message}).to_string(),
+        ))
+        .await
+        .map_err(Into::into)
+}
+
+async fn send_stopped(
+    ws_sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    reason: &str,
+    session_id: Option<&str>,
+) -> anyhow::Result<()> {
+    ws_sink
+        .send(Message::text(
+            serde_json::json!({
+                "type": "stopped",
+                "reason": reason,
+                "session_id": session_id,
+            })
+            .to_string(),
         ))
         .await
         .map_err(Into::into)
@@ -311,6 +494,13 @@ fn required_field<'a>(value: Option<&'a str>, field_name: &str) -> anyhow::Resul
         .map(str::trim)
         .filter(|v| !v.is_empty())
         .ok_or_else(|| anyhow::anyhow!("missing required field '{}'", field_name))
+}
+
+fn is_thread_mutating_command(msg_type: &str) -> bool {
+    matches!(
+        msg_type,
+        "thread_create" | "thread_rename" | "thread_switch" | "thread_clear" | "thread_delete"
+    )
 }
 
 #[cfg(test)]
@@ -504,5 +694,18 @@ mod tests {
         .await
         .expect_err("should reject missing session_id");
         assert!(err.to_string().contains("session_id"));
+    }
+
+    #[test]
+    fn thread_mutation_command_detection() {
+        assert!(is_thread_mutating_command("thread_create"));
+        assert!(is_thread_mutating_command("thread_rename"));
+        assert!(is_thread_mutating_command("thread_switch"));
+        assert!(is_thread_mutating_command("thread_clear"));
+        assert!(is_thread_mutating_command("thread_delete"));
+
+        assert!(!is_thread_mutating_command("thread_list"));
+        assert!(!is_thread_mutating_command("kill_switch"));
+        assert!(!is_thread_mutating_command("message"));
     }
 }

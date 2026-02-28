@@ -63,11 +63,18 @@
     usage?: Partial<TokenUsage>;
   };
 
+  type StoppedEvent = {
+    type: 'stopped';
+    reason?: string;
+    session_id?: string;
+  };
+
   type ServerEvent =
     | { type: 'chunk'; content?: string }
     | { type: 'tool_call_start'; name?: string; args?: unknown }
     | { type: 'tool_call_result'; name?: string; output?: string; success?: boolean }
     | DoneEvent
+    | StoppedEvent
     | { type: 'error'; message?: string }
     | {
         type: 'thread_list';
@@ -113,6 +120,7 @@
 
   let inputValue = '';
   let isWaiting = false;
+  let killRequested = false;
   let connectionState: ConnectionState = 'connecting';
   let showReconnectOverlay = false;
   let toolOutputsExpanded = true;
@@ -139,6 +147,8 @@
     !isWaiting &&
     connectionState === 'connected' &&
     inputValue.trim().length > 0;
+
+  $: canKill = isWaiting && connectionState === 'connected' && !killRequested;
 
   $: statusLabel =
     connectionState === 'connected'
@@ -273,6 +283,9 @@
         return;
       case 'done':
         onDone(event);
+        return;
+      case 'stopped':
+        onStopped(event);
         return;
       case 'thread_list':
         applyThreadState(event.sessions, event.current_session_id);
@@ -545,6 +558,20 @@
     scrollToBottom();
   }
 
+  function onStopped(event: StoppedEvent): void {
+    finishCurrentBubble();
+    resolvePendingToolsAsStopped();
+
+    if (event.reason === 'internal_cancel') {
+      onError('Run stopped due to an internal cancellation.');
+      return;
+    }
+
+    resetActiveResponseState();
+    setWaiting(false);
+    scrollToBottom();
+  }
+
   function onError(message: string): void {
     finishCurrentBubble();
 
@@ -581,8 +608,25 @@
   function setWaiting(value: boolean): void {
     isWaiting = value;
     if (!value) {
+      killRequested = false;
       tick().then(() => inputEl?.focus());
     }
+  }
+
+  function resolvePendingToolsAsStopped(): void {
+    entries = entries.map((entry) => {
+      if (entry.kind !== 'tool' || entry.resolved) {
+        return entry;
+      }
+
+      return {
+        ...entry,
+        resolved: true,
+        status: 'failure',
+        output: entry.output || 'Stopped by user.',
+        open: entry.open || toolOutputsExpanded
+      };
+    });
   }
 
   function resetActiveResponseState(): void {
@@ -710,8 +754,17 @@
     ws.send(JSON.stringify(payload));
   }
 
+  function requestKillSwitch(): void {
+    if (connectionState !== 'connected' || !isWaiting || killRequested) {
+      return;
+    }
+
+    killRequested = true;
+    sendControl({ type: 'kill_switch' });
+  }
+
   function switchThread(sessionId: string): void {
-    if (sessionId === currentSessionId) {
+    if (isWaiting || sessionId === currentSessionId) {
       return;
     }
     setWaiting(false);
@@ -749,8 +802,13 @@
 
     if (cmd === 'help') {
       pushAssistantNote(
-        'Session commands: `/new [name]`, `/rename <name>`, `/clear`, `/delete`\nTool view: `/tools <collapse|expand|hide|show>`'
+        'Session commands: `/new [name]`, `/rename <name>`, `/clear`, `/delete`, `/stop`\nTool view: `/tools <collapse|expand|hide|show>`'
       );
+      return true;
+    }
+
+    if (cmd === 'stop') {
+      requestKillSwitch();
       return true;
     }
 
@@ -943,6 +1001,7 @@
             class={`thread-chip ${thread.id === currentSessionId ? 'active' : ''}`}
             on:click={() => switchThread(thread.id)}
             title={thread.display_name}
+            disabled={isWaiting}
           >
             <span>{thread.display_name}</span>
           </button>
@@ -954,6 +1013,7 @@
         <code>/rename &lt;name&gt;</code>
         <code>/clear</code>
         <code>/delete</code>
+        <code>/stop</code>
         <code>/tools &lt;collapse|expand|hide|show&gt;</code>
       </div>
       <div class="tool-controls">
@@ -1064,6 +1124,16 @@
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M2.2 21.8L23 12 2.2 2.2 2 9.8l14.5 2.2L2 14.2z"></path>
             </svg>
+          </button>
+
+          <button
+            type="button"
+            class="kill-switch"
+            on:click={requestKillSwitch}
+            disabled={!canKill}
+            aria-label="Stop response"
+          >
+            Stop
           </button>
         </div>
       </footer>

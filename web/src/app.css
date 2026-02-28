@@ -144,6 +144,11 @@ body {
   background: #1a283f;
 }
 
+.thread-chip:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .slash-hint {
   border: 1px solid #23304a;
   border-radius: 11px;
@@ -598,6 +603,33 @@ h1 {
 }
 
 .send:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.kill-switch {
+  min-width: 4.25rem;
+  height: 2.55rem;
+  border-radius: 11px;
+  border: 1px solid #6f3a3f;
+  background: linear-gradient(180deg, #8b3d48 0%, #6d2b36 100%);
+  color: #ffe8ec;
+  font-size: 0.79rem;
+  font-weight: 700;
+  padding: 0 0.85rem;
+  cursor: pointer;
+  transition: transform 0.12s ease, filter 0.2s ease, opacity 0.2s ease;
+}
+
+.kill-switch:hover:enabled {
+  filter: brightness(1.06);
+}
+
+.kill-switch:active:enabled {
+  transform: scale(0.98);
+}
+
+.kill-switch:disabled {
   opacity: 0.4;
   cursor: not-allowed;
 }
