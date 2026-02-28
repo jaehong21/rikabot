@@ -57,11 +57,22 @@ impl Tool for McpToolWrapper {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::McpAuthMode;
     use std::collections::HashMap;
+    use uuid::Uuid;
+
+    fn temp_workspace(name: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("rikabot-mcp-tool-{}-{}", name, Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
 
     #[tokio::test]
     async fn wrapper_forwards_name_description_and_schema() {
-        let registry = Arc::new(crate::tools::mcp_client::McpRegistry::connect_all(&[]).await);
+        let workspace = temp_workspace("schema");
+        let registry =
+            Arc::new(crate::tools::mcp_client::McpRegistry::connect_all(&[], &workspace).await);
         let def = McpToolDef {
             name: "search".to_string(),
             description: Some("Search issues".to_string()),
@@ -80,16 +91,23 @@ mod tests {
             name: "disabled".to_string(),
             enabled: false,
             transport: crate::config::McpTransport::Stdio,
+            auth_mode: McpAuthMode::Headers,
             command: Some("echo".to_string()),
             args: vec![],
             env: HashMap::new(),
             cwd: None,
             url: None,
             headers: HashMap::new(),
+            oauth_client_id: None,
+            oauth_client_secret_env: None,
+            oauth_scopes: vec![],
+            oauth_authorization_server: None,
             tool_timeout_secs: None,
             init_timeout_secs: None,
         };
-        let registry = Arc::new(crate::tools::mcp_client::McpRegistry::connect_all(&[cfg]).await);
+        let workspace = temp_workspace("unknown-tool");
+        let registry =
+            Arc::new(crate::tools::mcp_client::McpRegistry::connect_all(&[cfg], &workspace).await);
         let def = McpToolDef {
             name: "search".to_string(),
             description: None,

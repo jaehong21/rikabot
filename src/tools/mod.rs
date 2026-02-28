@@ -9,6 +9,7 @@ pub mod filesystem_read;
 pub mod filesystem_search;
 pub mod filesystem_write;
 pub mod mcp_client;
+pub mod mcp_oauth;
 pub mod mcp_protocol;
 pub mod mcp_tool;
 pub mod mcp_transport;

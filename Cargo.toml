@@ -32,3 +32,8 @@ uuid = { version = "1", features = ["v4"] }
 glob = "0.3"
 regex = "1"
 chrono = { version = "0.4", features = ["serde"] }
+base64 = "0.22"
+rand = "0.8"
+sha2 = "0.10"
+webbrowser = "1"
+url = "2"

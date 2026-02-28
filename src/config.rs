@@ -87,6 +87,19 @@ impl Default for McpTransport {
     }
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum McpAuthMode {
+    Headers,
+    Oauth,
+}
+
+impl Default for McpAuthMode {
+    fn default() -> Self {
+        Self::Headers
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct McpServerConfig {
     pub name: String,
@@ -94,6 +107,8 @@ pub struct McpServerConfig {
     pub enabled: bool,
     #[serde(default)]
     pub transport: McpTransport,
+    #[serde(default)]
+    pub auth_mode: McpAuthMode,
     pub command: Option<String>,
     #[serde(default)]
     pub args: Vec<String>,
@@ -103,6 +118,11 @@ pub struct McpServerConfig {
     pub url: Option<String>,
     #[serde(default)]
     pub headers: HashMap<String, String>,
+    pub oauth_client_id: Option<String>,
+    pub oauth_client_secret_env: Option<String>,
+    #[serde(default)]
+    pub oauth_scopes: Vec<String>,
+    pub oauth_authorization_server: Option<String>,
     pub tool_timeout_secs: Option<u64>,
     pub init_timeout_secs: Option<u64>,
 }
@@ -125,6 +145,20 @@ impl McpServerConfig {
             resolved.insert(key.clone(), resolve_env_placeholders(value)?);
         }
         Ok(resolved)
+    }
+
+    pub fn resolved_oauth_client_secret(&self) -> Result<Option<String>> {
+        let Some(env_name) = self.oauth_client_secret_env.as_deref() else {
+            return Ok(None);
+        };
+        let env_name = env_name.trim();
+        if env_name.is_empty() {
+            anyhow::bail!("oauth_client_secret_env cannot be empty");
+        }
+        let secret = std::env::var(env_name).map_err(|_| {
+            anyhow::anyhow!("env var '{}' not set for MCP OAuth client secret", env_name)
+        })?;
+        Ok(Some(secret))
     }
 }
 
@@ -253,6 +287,52 @@ impl McpConfig {
                         "http" | "https" => {}
                         _ => {
                             anyhow::bail!("MCP server '{}' url must use http or https", server.name)
+                        }
+                    }
+                }
+            }
+
+            match server.auth_mode {
+                McpAuthMode::Headers => {}
+                McpAuthMode::Oauth => {
+                    if server.transport != McpTransport::Http {
+                        anyhow::bail!(
+                            "MCP server '{}' with oauth auth_mode requires http transport",
+                            server.name
+                        );
+                    }
+
+                    if server
+                        .headers
+                        .keys()
+                        .any(|k| k.eq_ignore_ascii_case("authorization"))
+                    {
+                        anyhow::bail!(
+                            "MCP server '{}' with oauth auth_mode must not set Authorization header",
+                            server.name
+                        );
+                    }
+
+                    if let Some(raw) = server.oauth_authorization_server.as_deref() {
+                        let value = raw.trim();
+                        if value.is_empty() {
+                            anyhow::bail!(
+                                "MCP server '{}' oauth_authorization_server cannot be empty",
+                                server.name
+                            );
+                        }
+                        let parsed = reqwest::Url::parse(value).map_err(|_| {
+                            anyhow::anyhow!(
+                                "MCP server '{}' has invalid oauth_authorization_server url",
+                                server.name
+                            )
+                        })?;
+                        match parsed.scheme() {
+                            "http" | "https" => {}
+                            _ => anyhow::bail!(
+                                "MCP server '{}' oauth_authorization_server must use http or https",
+                                server.name
+                            ),
                         }
                     }
                 }
@@ -407,12 +487,17 @@ mod tests {
             name: "s".to_string(),
             enabled: true,
             transport: McpTransport::default(),
+            auth_mode: McpAuthMode::default(),
             command: Some("cmd".to_string()),
             args: vec![],
             env: HashMap::new(),
             cwd: None,
             url: None,
             headers: HashMap::new(),
+            oauth_client_id: None,
+            oauth_client_secret_env: None,
+            oauth_scopes: vec![],
+            oauth_authorization_server: None,
             tool_timeout_secs: None,
             init_timeout_secs: None,
         };
@@ -428,12 +513,17 @@ mod tests {
                     name: "dup".to_string(),
                     enabled: true,
                     transport: McpTransport::Stdio,
+                    auth_mode: McpAuthMode::Headers,
                     command: Some("echo".to_string()),
                     args: vec![],
                     env: HashMap::new(),
                     cwd: None,
                     url: None,
                     headers: HashMap::new(),
+                    oauth_client_id: None,
+                    oauth_client_secret_env: None,
+                    oauth_scopes: vec![],
+                    oauth_authorization_server: None,
                     tool_timeout_secs: None,
                     init_timeout_secs: None,
                 },
@@ -441,12 +531,17 @@ mod tests {
                     name: "dup".to_string(),
                     enabled: true,
                     transport: McpTransport::Http,
+                    auth_mode: McpAuthMode::Headers,
                     command: None,
                     args: vec![],
                     env: HashMap::new(),
                     cwd: None,
                     url: Some("https://example.com/mcp".to_string()),
                     headers: HashMap::new(),
+                    oauth_client_id: None,
+                    oauth_client_secret_env: None,
+                    oauth_scopes: vec![],
+                    oauth_authorization_server: None,
                     tool_timeout_secs: None,
                     init_timeout_secs: None,
                 },
@@ -464,12 +559,17 @@ mod tests {
                 name: "stdio".to_string(),
                 enabled: true,
                 transport: McpTransport::Stdio,
+                auth_mode: McpAuthMode::Headers,
                 command: None,
                 args: vec![],
                 env: HashMap::new(),
                 cwd: None,
                 url: None,
                 headers: HashMap::new(),
+                oauth_client_id: None,
+                oauth_client_secret_env: None,
+                oauth_scopes: vec![],
+                oauth_authorization_server: None,
                 tool_timeout_secs: None,
                 init_timeout_secs: None,
             }],
@@ -486,12 +586,17 @@ mod tests {
                 name: "http".to_string(),
                 enabled: true,
                 transport: McpTransport::Http,
+                auth_mode: McpAuthMode::Headers,
                 command: None,
                 args: vec![],
                 env: HashMap::new(),
                 cwd: None,
                 url: None,
                 headers: HashMap::new(),
+                oauth_client_id: None,
+                oauth_client_secret_env: None,
+                oauth_scopes: vec![],
+                oauth_authorization_server: None,
                 tool_timeout_secs: None,
                 init_timeout_secs: None,
             }],
@@ -517,12 +622,17 @@ mod tests {
                 name: "http".to_string(),
                 enabled: true,
                 transport: McpTransport::Http,
+                auth_mode: McpAuthMode::Headers,
                 command: None,
                 args: vec![],
                 env: HashMap::new(),
                 cwd: None,
                 url: Some("https://mcp.linear.app/mcp".to_string()),
                 headers,
+                oauth_client_id: None,
+                oauth_client_secret_env: None,
+                oauth_scopes: vec![],
+                oauth_authorization_server: None,
                 tool_timeout_secs: None,
                 init_timeout_secs: None,
             }],
@@ -544,12 +654,17 @@ mod tests {
             name: "http".to_string(),
             enabled: true,
             transport: McpTransport::Http,
+            auth_mode: McpAuthMode::Headers,
             command: None,
             args: vec![],
             env: HashMap::new(),
             cwd: None,
             url: Some("https://mcp.notion.com/mcp".to_string()),
             headers,
+            oauth_client_id: None,
+            oauth_client_secret_env: None,
+            oauth_scopes: vec![],
+            oauth_authorization_server: None,
             tool_timeout_secs: None,
             init_timeout_secs: None,
         };
@@ -566,12 +681,17 @@ mod tests {
             name: "http".to_string(),
             enabled: true,
             transport: McpTransport::Http,
+            auth_mode: McpAuthMode::Headers,
             command: None,
             args: vec![],
             env: HashMap::new(),
             cwd: None,
             url: Some("https://mcp.notion.com/mcp".to_string()),
             headers,
+            oauth_client_id: None,
+            oauth_client_secret_env: None,
+            oauth_scopes: vec![],
+            oauth_authorization_server: None,
             tool_timeout_secs: None,
             init_timeout_secs: None,
         };
@@ -580,17 +700,109 @@ mod tests {
     }
 
     #[test]
+    fn mcp_oauth_mode_requires_http_transport() {
+        let cfg = McpConfig {
+            enabled: true,
+            servers: vec![McpServerConfig {
+                name: "oauth_stdio".to_string(),
+                enabled: true,
+                transport: McpTransport::Stdio,
+                auth_mode: McpAuthMode::Oauth,
+                command: Some("echo".to_string()),
+                args: vec![],
+                env: HashMap::new(),
+                cwd: None,
+                url: None,
+                headers: HashMap::new(),
+                oauth_client_id: None,
+                oauth_client_secret_env: None,
+                oauth_scopes: vec![],
+                oauth_authorization_server: None,
+                tool_timeout_secs: None,
+                init_timeout_secs: None,
+            }],
+        };
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("requires http transport"));
+    }
+
+    #[test]
+    fn mcp_oauth_mode_rejects_authorization_header() {
+        let mut headers = HashMap::new();
+        headers.insert("Authorization".to_string(), "Bearer abc".to_string());
+
+        let cfg = McpConfig {
+            enabled: true,
+            servers: vec![McpServerConfig {
+                name: "oauth_header".to_string(),
+                enabled: true,
+                transport: McpTransport::Http,
+                auth_mode: McpAuthMode::Oauth,
+                command: None,
+                args: vec![],
+                env: HashMap::new(),
+                cwd: None,
+                url: Some("https://example.com/mcp".to_string()),
+                headers,
+                oauth_client_id: None,
+                oauth_client_secret_env: None,
+                oauth_scopes: vec![],
+                oauth_authorization_server: None,
+                tool_timeout_secs: None,
+                init_timeout_secs: None,
+            }],
+        };
+
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("must not set Authorization header"));
+    }
+
+    #[test]
+    fn mcp_oauth_client_secret_resolves_from_env() {
+        let env_name = "RIKABOT_TEST_MCP_OAUTH_CLIENT_SECRET";
+        unsafe { std::env::set_var(env_name, "top-secret") };
+
+        let server = McpServerConfig {
+            name: "oauth".to_string(),
+            enabled: true,
+            transport: McpTransport::Http,
+            auth_mode: McpAuthMode::Oauth,
+            command: None,
+            args: vec![],
+            env: HashMap::new(),
+            cwd: None,
+            url: Some("https://example.com/mcp".to_string()),
+            headers: HashMap::new(),
+            oauth_client_id: None,
+            oauth_client_secret_env: Some(env_name.to_string()),
+            oauth_scopes: vec![],
+            oauth_authorization_server: None,
+            tool_timeout_secs: None,
+            init_timeout_secs: None,
+        };
+
+        let resolved = server.resolved_oauth_client_secret().unwrap();
+        assert_eq!(resolved.as_deref(), Some("top-secret"));
+        unsafe { std::env::remove_var(env_name) };
+    }
+
+    #[test]
     fn mcp_tool_timeout_is_capped() {
         let server = McpServerConfig {
             name: "cap".to_string(),
             enabled: true,
             transport: McpTransport::Stdio,
+            auth_mode: McpAuthMode::Headers,
             command: Some("echo".to_string()),
             args: vec![],
             env: HashMap::new(),
             cwd: None,
             url: None,
             headers: HashMap::new(),
+            oauth_client_id: None,
+            oauth_client_secret_env: None,
+            oauth_scopes: vec![],
+            oauth_authorization_server: None,
             tool_timeout_secs: Some(9_999),
             init_timeout_secs: None,
         };

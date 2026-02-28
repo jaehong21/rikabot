@@ -46,8 +46,9 @@ async fn main() -> Result<()> {
     let mut tool_registry = tools::default_registry(&workspace_dir);
 
     if config.mcp.enabled && !config.mcp.servers.is_empty() {
-        let mcp_registry =
-            Arc::new(tools::mcp_client::McpRegistry::connect_all(&config.mcp.servers).await);
+        let mcp_registry = Arc::new(
+            tools::mcp_client::McpRegistry::connect_all(&config.mcp.servers, &workspace_dir).await,
+        );
         let added = tool_registry
             .register_mcp_tools(mcp_registry.clone())
             .await?;

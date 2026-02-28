@@ -1,9 +1,11 @@
 use anyhow::{anyhow, bail, Context, Result};
+use std::path::Path;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::time::{timeout, Duration};
 
 use crate::config::{McpServerConfig, McpTransport};
+use crate::tools::mcp_oauth::McpOAuthSession;
 use crate::tools::mcp_protocol::{JsonRpcRequest, JsonRpcResponse};
 
 const MAX_LINE_BYTES: usize = 4 * 1024 * 1024;
@@ -120,10 +122,11 @@ pub struct HttpTransport {
     client: reqwest::Client,
     headers: std::collections::HashMap<String, String>,
     session_id: Option<String>,
+    oauth: Option<McpOAuthSession>,
 }
 
 impl HttpTransport {
-    pub fn new(config: &McpServerConfig) -> Result<Self> {
+    pub fn new(config: &McpServerConfig, workspace_dir: &Path) -> Result<Self> {
         let url = config
             .url
             .as_deref()
@@ -135,12 +138,14 @@ impl HttpTransport {
             .timeout(Duration::from_secs(config.resolved_tool_timeout_secs()))
             .build()
             .context("failed to build MCP HTTP client")?;
+        let oauth = McpOAuthSession::new(config, workspace_dir)?;
 
         Ok(Self {
             url: url.to_string(),
             client,
             headers,
             session_id: None,
+            oauth,
         })
     }
 }
@@ -181,87 +186,133 @@ impl McpTransportConn for HttpTransport {
         timeout_secs: u64,
     ) -> Result<JsonRpcResponse> {
         let body = serde_json::to_string(request)?;
-        let mut req = self
-            .client
-            .post(&self.url)
-            .body(body)
-            .header("Content-Type", "application/json")
-            // Required by MCP Streamable HTTP transport.
-            .header("Accept", "application/json, text/event-stream");
+        let mut did_retry_after_auth = false;
 
-        for (k, v) in &self.headers {
-            req = req.header(k, v);
-        }
-        if let Some(session_id) = &self.session_id {
-            req = req.header("MCP-Session-Id", session_id);
-        }
-
-        let resp = timeout(Duration::from_secs(timeout_secs), req.send())
-            .await
-            .context("timeout waiting for MCP HTTP response")?
-            .context("HTTP request to MCP server failed")?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            if body.is_empty() {
-                bail!("MCP server returned HTTP {}", status);
+        loop {
+            if let Some(oauth) = self.oauth.as_mut() {
+                if let Err(err) = oauth.maybe_refresh_token(&self.client).await {
+                    tracing::warn!(
+                        "MCP OAuth proactive refresh failed for '{}': {}",
+                        self.url,
+                        err
+                    );
+                }
             }
-            bail!("MCP server returned HTTP {}: {}", status, body);
-        }
 
-        if let Some(session_id) = resp
-            .headers()
-            .get("MCP-Session-Id")
-            .and_then(|v| v.to_str().ok())
-            .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty())
-        {
-            self.session_id = Some(session_id);
-        }
+            let mut req = self
+                .client
+                .post(&self.url)
+                .body(body.clone())
+                .header("Content-Type", "application/json")
+                // Required by MCP Streamable HTTP transport.
+                .header("Accept", "application/json, text/event-stream");
 
-        let content_type = resp
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or_default()
-            .to_ascii_lowercase();
+            for (k, v) in &self.headers {
+                req = req.header(k, v);
+            }
+            if let Some(session_id) = &self.session_id {
+                req = req.header("MCP-Session-Id", session_id);
+            }
+            if let Some(oauth) = self.oauth.as_ref() {
+                if let Some(value) = oauth.authorization_header_value() {
+                    req = req.header(reqwest::header::AUTHORIZATION, value);
+                }
+            }
 
-        let text = resp.text().await.context("failed to read MCP HTTP body")?;
-        if text.trim().is_empty() && request.id.is_none() {
-            return Ok(JsonRpcResponse {
-                jsonrpc: "2.0".to_string(),
-                id: None,
-                result: Some(serde_json::json!({})),
-                error: None,
+            let resp = timeout(Duration::from_secs(timeout_secs), req.send())
+                .await
+                .context("timeout waiting for MCP HTTP response")?
+                .context("HTTP request to MCP server failed")?;
+
+            if resp.status() == reqwest::StatusCode::UNAUTHORIZED
+                && !did_retry_after_auth
+                && self.oauth.is_some()
+            {
+                let www_authenticate = resp
+                    .headers()
+                    .get(reqwest::header::WWW_AUTHENTICATE)
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_string);
+
+                let mut did_recover = false;
+                if let Some(oauth) = self.oauth.as_mut() {
+                    did_recover = oauth
+                        .recover_from_401(&self.client, www_authenticate.as_deref())
+                        .await
+                        .context("MCP OAuth recovery failed")?;
+                }
+                if did_recover {
+                    did_retry_after_auth = true;
+                    continue;
+                }
+            }
+
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let body = resp.text().await.unwrap_or_default();
+                if body.is_empty() {
+                    bail!("MCP server returned HTTP {}", status);
+                }
+                bail!("MCP server returned HTTP {}: {}", status, body);
+            }
+
+            if let Some(session_id) = resp
+                .headers()
+                .get("MCP-Session-Id")
+                .and_then(|v| v.to_str().ok())
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+            {
+                self.session_id = Some(session_id);
+            }
+
+            let content_type = resp
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+
+            let text = resp.text().await.context("failed to read MCP HTTP body")?;
+            if text.trim().is_empty() && request.id.is_none() {
+                return Ok(JsonRpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    id: None,
+                    result: Some(serde_json::json!({})),
+                    error: None,
+                });
+            }
+
+            if content_type.starts_with("text/event-stream") {
+                return parse_sse_jsonrpc(&text).with_context(|| {
+                    format!("invalid SSE JSON-RPC response from http transport: {text}")
+                });
+            }
+
+            return serde_json::from_str(&text).with_context(|| {
+                format!(
+                    "invalid JSON-RPC response from http transport (content-type: {}): {text}",
+                    content_type
+                )
             });
         }
-
-        if content_type.starts_with("text/event-stream") {
-            return parse_sse_jsonrpc(&text).with_context(|| {
-                format!("invalid SSE JSON-RPC response from http transport: {text}")
-            });
-        }
-
-        serde_json::from_str(&text).with_context(|| {
-            format!(
-                "invalid JSON-RPC response from http transport (content-type: {}): {text}",
-                content_type
-            )
-        })
     }
 }
 
-pub fn create_transport(config: &McpServerConfig) -> Result<Box<dyn McpTransportConn>> {
+pub fn create_transport(
+    config: &McpServerConfig,
+    workspace_dir: &Path,
+) -> Result<Box<dyn McpTransportConn>> {
     match config.transport {
         McpTransport::Stdio => Ok(Box::new(StdioTransport::new(config)?)),
-        McpTransport::Http => Ok(Box::new(HttpTransport::new(config)?)),
+        McpTransport::Http => Ok(Box::new(HttpTransport::new(config, workspace_dir)?)),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::McpAuthMode;
     use axum::extract::Request;
     use axum::http::{HeaderValue, StatusCode};
     use axum::response::IntoResponse;
@@ -271,21 +322,34 @@ mod tests {
     use std::sync::Arc;
     use tokio::net::TcpListener;
     use tokio::sync::Mutex;
+    use uuid::Uuid;
 
     fn base_server(name: &str) -> McpServerConfig {
         McpServerConfig {
             name: name.to_string(),
             enabled: true,
             transport: McpTransport::Stdio,
+            auth_mode: McpAuthMode::Headers,
             command: Some("echo".to_string()),
             args: vec![],
             env: HashMap::new(),
             cwd: None,
             url: None,
             headers: HashMap::new(),
+            oauth_client_id: None,
+            oauth_client_secret_env: None,
+            oauth_scopes: vec![],
+            oauth_authorization_server: None,
             tool_timeout_secs: None,
             init_timeout_secs: None,
         }
+    }
+
+    fn temp_workspace(name: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("rikabot-mcp-transport-{}-{}", name, Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
     }
 
     #[test]
@@ -304,7 +368,8 @@ mod tests {
         let mut cfg = base_server("http");
         cfg.transport = McpTransport::Http;
         cfg.command = None;
-        let err = match HttpTransport::new(&cfg) {
+        let workspace = temp_workspace("missing-url");
+        let err = match HttpTransport::new(&cfg, &workspace) {
             Ok(_) => panic!("http transport creation should fail"),
             Err(e) => e.to_string(),
         };
@@ -328,7 +393,8 @@ mod tests {
         cfg.command = None;
         cfg.url = Some(format!("http://{addr}/mcp"));
 
-        let mut t = HttpTransport::new(&cfg).unwrap();
+        let workspace = temp_workspace("http-500");
+        let mut t = HttpTransport::new(&cfg, &workspace).unwrap();
         let req = JsonRpcRequest::new(1, "tools/list", serde_json::json!({}));
         let err = t.send_and_recv(&req, 3).await.unwrap_err().to_string();
         assert!(err.contains("MCP server returned HTTP 500"));
@@ -370,7 +436,8 @@ mod tests {
         cfg.command = None;
         cfg.url = Some(format!("http://{addr}/mcp"));
 
-        let mut t = HttpTransport::new(&cfg).unwrap();
+        let workspace = temp_workspace("accept-header");
+        let mut t = HttpTransport::new(&cfg, &workspace).unwrap();
         let req = JsonRpcRequest::new(1, "tools/list", serde_json::json!({}));
         let resp = t.send_and_recv(&req, 3).await.unwrap();
         assert_eq!(resp.result.unwrap()["ok"], true);
@@ -423,7 +490,8 @@ mod tests {
         cfg.command = None;
         cfg.url = Some(format!("http://{addr}/mcp"));
 
-        let mut t = HttpTransport::new(&cfg).unwrap();
+        let workspace = temp_workspace("session-id");
+        let mut t = HttpTransport::new(&cfg, &workspace).unwrap();
         let req = JsonRpcRequest::new(1, "initialize", serde_json::json!({}));
         let _ = t.send_and_recv(&req, 3).await.unwrap();
         let req2 = JsonRpcRequest::new(1, "tools/list", serde_json::json!({}));
@@ -461,7 +529,8 @@ mod tests {
         cfg.command = None;
         cfg.url = Some(format!("http://{addr}/mcp"));
 
-        let mut t = HttpTransport::new(&cfg).unwrap();
+        let workspace = temp_workspace("sse");
+        let mut t = HttpTransport::new(&cfg, &workspace).unwrap();
         let req = JsonRpcRequest::new(1, "tools/list", serde_json::json!({}));
         let resp = t.send_and_recv(&req, 3).await.unwrap();
         assert_eq!(resp.result.unwrap()["ok"], true);

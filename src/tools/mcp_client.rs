@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -25,8 +26,8 @@ pub struct McpServer {
 }
 
 impl McpServer {
-    pub async fn connect(config: McpServerConfig) -> Result<Self> {
-        let mut transport = create_transport(&config)
+    pub async fn connect(config: McpServerConfig, workspace_dir: &Path) -> Result<Self> {
+        let mut transport = create_transport(&config, workspace_dir)
             .with_context(|| format!("failed to create MCP transport for `{}`", config.name))?;
 
         let init_req = JsonRpcRequest::new(
@@ -113,7 +114,7 @@ pub struct McpRegistry {
 }
 
 impl McpRegistry {
-    pub async fn connect_all(configs: &[McpServerConfig]) -> Self {
+    pub async fn connect_all(configs: &[McpServerConfig], workspace_dir: &Path) -> Self {
         let mut servers = Vec::new();
         let mut tool_index = HashMap::new();
 
@@ -123,7 +124,7 @@ impl McpRegistry {
                 continue;
             }
 
-            match McpServer::connect(config.clone()).await {
+            match McpServer::connect(config.clone(), workspace_dir).await {
                 Ok(server) => {
                     let server_idx = servers.len();
                     let tools = server.tools().await;
@@ -191,15 +192,24 @@ impl McpRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::McpTransport;
+    use crate::config::{McpAuthMode, McpTransport};
     use axum::extract::State;
     use axum::routing::post;
     use axum::Router;
     use serde_json::Value;
     use std::net::SocketAddr;
+    use std::path::PathBuf;
     use std::sync::Arc;
     use tokio::net::TcpListener;
     use tokio::sync::Mutex as TokioMutex;
+    use uuid::Uuid;
+
+    fn temp_workspace(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("rikabot-mcp-client-{}-{}", name, Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
 
     #[test]
     fn prefixed_name_format() {
@@ -213,16 +223,22 @@ mod tests {
             name: "bad".to_string(),
             enabled: true,
             transport: McpTransport::Stdio,
+            auth_mode: McpAuthMode::Headers,
             command: Some("/this/does/not/exist/rikabot".to_string()),
             args: vec![],
             env: HashMap::new(),
             cwd: None,
             url: None,
             headers: HashMap::new(),
+            oauth_client_id: None,
+            oauth_client_secret_env: None,
+            oauth_scopes: vec![],
+            oauth_authorization_server: None,
             tool_timeout_secs: None,
             init_timeout_secs: None,
         };
-        let registry = McpRegistry::connect_all(&[cfg]).await;
+        let workspace = temp_workspace("single-failure");
+        let registry = McpRegistry::connect_all(&[cfg], &workspace).await;
         assert!(registry.is_empty());
     }
 
@@ -254,17 +270,23 @@ done"#;
             name: "stdio_mock".to_string(),
             enabled: true,
             transport: McpTransport::Stdio,
+            auth_mode: McpAuthMode::Headers,
             command: Some("sh".to_string()),
             args: vec!["-c".to_string(), script.to_string()],
             env: HashMap::new(),
             cwd: None,
             url: None,
             headers: HashMap::new(),
+            oauth_client_id: None,
+            oauth_client_secret_env: None,
+            oauth_scopes: vec![],
+            oauth_authorization_server: None,
             tool_timeout_secs: Some(10),
             init_timeout_secs: Some(10),
         };
 
-        let server = McpServer::connect(cfg)
+        let workspace = temp_workspace("stdio-flow");
+        let server = McpServer::connect(cfg, &workspace)
             .await
             .expect("stdio connect should succeed");
         let tools = server.tools().await;
@@ -355,17 +377,23 @@ done"#;
             name: "http_mock".to_string(),
             enabled: true,
             transport: McpTransport::Http,
+            auth_mode: McpAuthMode::Headers,
             command: None,
             args: vec![],
             env: HashMap::new(),
             cwd: None,
             url: Some(format!("http://{}/mcp", addr)),
             headers: HashMap::new(),
+            oauth_client_id: None,
+            oauth_client_secret_env: None,
+            oauth_scopes: vec![],
+            oauth_authorization_server: None,
             tool_timeout_secs: Some(10),
             init_timeout_secs: Some(10),
         };
 
-        let server = McpServer::connect(cfg)
+        let workspace = temp_workspace("http-flow");
+        let server = McpServer::connect(cfg, &workspace)
             .await
             .expect("http connect should succeed");
         let tools = server.tools().await;

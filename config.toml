@@ -31,6 +31,7 @@ api_key = "xxx"
 # [[mcp.servers]]
 # name = "filesystem"
 # transport = "stdio" # "stdio" | "http"
+# auth_mode = "headers" # "headers" | "oauth"
 # command = "bunx"
 # args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
 # tool_timeout_secs = 180 # max: 600
@@ -40,5 +41,10 @@ api_key = "xxx"
 [[mcp.servers]]
 name = "linear"
 transport = "http"
+auth_mode = "oauth" # "headers" | "oauth"
 url = "https://mcp.linear.app/mcp"
-headers = { Authorization = "Bearer ${LINEAR_API_KEY}" }
+# For oauth mode, client_id is optional when provider supports dynamic client registration.
+# oauth_client_id = "your-client-id"
+# oauth_client_secret_env = "LINEAR_OAUTH_CLIENT_SECRET"
+# oauth_scopes = ["read"]
+# oauth_authorization_server = "https://mcp.linear.app"
