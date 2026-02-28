@@ -227,6 +227,120 @@ body {
   background: #1b2b43;
 }
 
+.mcp-panel {
+  border: 1px solid #23334f;
+  border-radius: 11px;
+  background: rgba(14, 21, 34, 0.72);
+  padding: 0.55rem;
+  display: grid;
+  gap: 0.42rem;
+}
+
+.mcp-summary,
+.mcp-empty {
+  margin: 0;
+  color: #9aabc7;
+  font-size: 0.72rem;
+}
+
+.mcp-list {
+  display: grid;
+  gap: 0.35rem;
+  max-height: 210px;
+  overflow: auto;
+}
+
+.mcp-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.mcp-list::-webkit-scrollbar-thumb {
+  background: #2e3a53;
+  border-radius: 999px;
+}
+
+.mcp-item {
+  border: 1px solid #263652;
+  border-radius: 9px;
+  background: #111a2b;
+  padding: 0.44rem 0.5rem;
+  display: grid;
+  gap: 0.22rem;
+}
+
+.mcp-item[data-state='ready'] {
+  border-color: #2f644f;
+}
+
+.mcp-item[data-state='connecting'] {
+  border-color: #2f536f;
+}
+
+.mcp-item[data-state='failed'] {
+  border-color: #703745;
+}
+
+.mcp-item[data-state='disabled'] {
+  border-color: #3b465a;
+}
+
+.mcp-item-head {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.mcp-dot {
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 50%;
+  background: #6f7f99;
+}
+
+.mcp-item[data-state='ready'] .mcp-dot {
+  background: var(--success);
+}
+
+.mcp-item[data-state='connecting'] .mcp-dot {
+  background: #7db8de;
+}
+
+.mcp-item[data-state='failed'] .mcp-dot {
+  background: var(--error);
+}
+
+.mcp-item[data-state='disabled'] .mcp-dot {
+  background: #79859d;
+}
+
+.mcp-name {
+  color: #d8e8ff;
+  font-size: 0.72rem;
+  font-family: 'IBM Plex Mono', 'Consolas', monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mcp-state {
+  color: #9fb2d1;
+  font-size: 0.67rem;
+}
+
+.mcp-meta {
+  margin: 0;
+  color: #8fa2bf;
+  font-size: 0.69rem;
+}
+
+.mcp-error {
+  margin: 0;
+  color: #ffb7c4;
+  font-size: 0.69rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
 .settings-card {
   border: 1px solid var(--border-soft);
   border-radius: 14px;

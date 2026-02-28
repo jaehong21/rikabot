@@ -114,6 +114,20 @@ pub struct McpRegistry {
 }
 
 impl McpRegistry {
+    pub async fn from_server(server_name: &str, server: McpServer) -> Self {
+        let mut tool_index = HashMap::new();
+        let tools = server.tools().await;
+        for tool in tools {
+            let prefixed = format!("{}__{}", server_name, tool.name);
+            tool_index.insert(prefixed, (0usize, tool.name));
+        }
+
+        Self {
+            servers: vec![server],
+            tool_index,
+        }
+    }
+
     pub async fn connect_all(configs: &[McpServerConfig], workspace_dir: &Path) -> Self {
         let mut servers = Vec::new();
         let mut tool_index = HashMap::new();

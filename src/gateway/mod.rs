@@ -19,6 +19,7 @@ use tower_http::{
 use crate::agent::Agent;
 use crate::config::PermissionsConfig;
 use crate::config_store::ConfigStore;
+use crate::mcp_runtime::McpRuntime;
 use crate::permissions::PermissionEngine;
 use crate::prompt::PromptManager;
 use crate::session::SessionManager;
@@ -58,6 +59,7 @@ pub struct AppState {
     pub permissions_config: Arc<tokio::sync::RwLock<PermissionsConfig>>,
     pub permission_engine: Arc<tokio::sync::RwLock<PermissionEngine>>,
     pub config_store: Arc<ConfigStore>,
+    pub mcp_runtime: Arc<McpRuntime>,
 }
 
 /// Health check endpoint.
@@ -93,6 +95,7 @@ pub async fn serve(
     permissions_config: Arc<tokio::sync::RwLock<PermissionsConfig>>,
     permission_engine: Arc<tokio::sync::RwLock<PermissionEngine>>,
     config_store: Arc<ConfigStore>,
+    mcp_runtime: Arc<McpRuntime>,
 ) -> Result<()> {
     let state = AppState {
         agent,
@@ -102,6 +105,7 @@ pub async fn serve(
         permissions_config,
         permission_engine,
         config_store,
+        mcp_runtime,
     };
     let app = build_router(state);
 

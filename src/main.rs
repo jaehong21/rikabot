@@ -2,6 +2,7 @@ mod agent;
 mod config;
 mod config_store;
 mod gateway;
+mod mcp_runtime;
 mod permissions;
 mod prompt;
 mod providers;
@@ -50,16 +51,17 @@ async fn main() -> Result<()> {
     ));
 
     // Create tool registry with default tools anchored to workspace.
-    let mut tool_registry = tools::default_registry(&workspace_dir, permissions_engine.clone());
-
+    let tool_registry = tools::default_registry(&workspace_dir, permissions_engine.clone());
+    let mcp_runtime = Arc::new(mcp_runtime::McpRuntime::new(
+        config.mcp.enabled,
+        &config.mcp.servers,
+    ));
     if config.mcp.enabled && !config.mcp.servers.is_empty() {
-        let mcp_registry = Arc::new(
-            tools::mcp_client::McpRegistry::connect_all(&config.mcp.servers, &workspace_dir).await,
+        mcp_runtime.spawn_background(
+            config.mcp.servers.clone(),
+            workspace_dir.clone(),
+            tool_registry.clone(),
         );
-        let added = tool_registry
-            .register_mcp_tools(mcp_registry.clone())
-            .await?;
-        tracing::info!("Registered {} MCP tool(s)", added);
     }
 
     let prompt_manager = Arc::new(prompt::PromptManager::new(
@@ -98,6 +100,7 @@ async fn main() -> Result<()> {
         permissions_config,
         permissions_engine,
         config_store,
+        mcp_runtime,
     )
     .await?;
 

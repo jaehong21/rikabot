@@ -3,7 +3,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use std::sync::RwLock;
+use tokio::sync::RwLock as TokioRwLock;
 
 use crate::permissions::PermissionEngine;
 
@@ -61,29 +62,34 @@ pub trait Tool: Send + Sync {
 // ── Tool registry ───────────────────────────────────────────────────────────
 
 /// Registry holding all available tools.
+#[derive(Clone)]
 pub struct ToolRegistry {
-    tools: Vec<Box<dyn Tool>>,
-    permission_engine: Arc<RwLock<PermissionEngine>>,
+    tools: Arc<RwLock<Vec<Arc<dyn Tool>>>>,
+    permission_engine: Arc<TokioRwLock<PermissionEngine>>,
 }
 
 impl ToolRegistry {
     /// Create an empty registry.
     pub fn new() -> Self {
-        Self::with_permission_engine(Arc::new(
-            RwLock::new(PermissionEngine::disabled_allow_all()),
-        ))
+        Self::with_permission_engine(Arc::new(TokioRwLock::new(
+            PermissionEngine::disabled_allow_all(),
+        )))
     }
 
-    pub fn with_permission_engine(permission_engine: Arc<RwLock<PermissionEngine>>) -> Self {
+    pub fn with_permission_engine(permission_engine: Arc<TokioRwLock<PermissionEngine>>) -> Self {
         Self {
-            tools: Vec::new(),
+            tools: Arc::new(RwLock::new(Vec::new())),
             permission_engine,
         }
     }
 
     /// Register a new tool.
     pub fn register(&mut self, tool: Box<dyn Tool>) {
-        self.tools.push(tool);
+        if let Ok(mut guard) = self.tools.write() {
+            guard.push(Arc::from(tool));
+        } else {
+            tracing::error!("tool registry write lock poisoned while registering tool");
+        }
     }
 
     pub async fn register_mcp_tools(
@@ -109,16 +115,25 @@ impl ToolRegistry {
 
     /// Get specs for all registered tools (for sending to the LLM).
     pub fn specs(&self) -> Vec<ToolSpec> {
-        self.tools.iter().map(|t| t.spec()).collect()
+        match self.tools.read() {
+            Ok(tools) => tools.iter().map(|t| t.spec()).collect(),
+            Err(_) => {
+                tracing::error!("tool registry read lock poisoned while collecting specs");
+                Vec::new()
+            }
+        }
     }
 
     /// Execute a tool by name with the given arguments.
     pub async fn execute(&self, name: &str, args: serde_json::Value) -> Result<ToolResult> {
-        let tool = self
-            .tools
-            .iter()
-            .find(|t| t.name() == name)
-            .ok_or_else(|| anyhow::anyhow!("Unknown tool: {}", name))?;
+        let tool = {
+            let tools = self
+                .tools
+                .read()
+                .map_err(|_| anyhow::anyhow!("tool registry read lock poisoned"))?;
+            tools.iter().find(|t| t.name() == name).cloned()
+        }
+        .ok_or_else(|| anyhow::anyhow!("Unknown tool: {}", name))?;
 
         let decision = {
             let permissions = self.permission_engine.read().await;
@@ -141,7 +156,7 @@ impl ToolRegistry {
 /// Create a ToolRegistry pre-loaded with the default tools (shell).
 pub fn default_registry(
     workspace_dir: &Path,
-    permission_engine: Arc<RwLock<PermissionEngine>>,
+    permission_engine: Arc<TokioRwLock<PermissionEngine>>,
 ) -> ToolRegistry {
     let mut registry = ToolRegistry::with_permission_engine(permission_engine);
     registry.register(Box::new(shell::ShellTool::with_workspace_dir(

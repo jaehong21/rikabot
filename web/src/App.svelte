@@ -79,6 +79,20 @@
     };
   };
 
+  type McpServerState = 'pending' | 'connecting' | 'ready' | 'failed' | 'disabled';
+
+  type McpServerStatus = {
+    name: string;
+    state: McpServerState;
+    tool_count?: number;
+    error?: string | null;
+  };
+
+  type McpStatusSnapshot = {
+    enabled?: boolean;
+    servers?: McpServerStatus[];
+  };
+
   type ServerEvent =
     | { type: 'user_message'; content?: string }
     | { type: 'chunk'; content?: string }
@@ -132,6 +146,10 @@
     | {
         type: 'permissions_updated';
         permissions?: PermissionsState;
+      }
+    | {
+        type: 'mcp_status';
+        mcp?: McpStatusSnapshot;
       };
 
   type SlashArgOption = {
@@ -234,6 +252,8 @@
   let permissionsDenyText = '';
   let permissionsErrors: string[] = [];
   let permissionsSavedAt: number | null = null;
+  let mcpEnabled = true;
+  let mcpServers: McpServerStatus[] = [];
 
   let slashSuggestions: SlashSuggestion[] = [];
   let slashSelectionIndex = 0;
@@ -252,6 +272,10 @@
       : connectionState === 'connecting'
         ? 'Connecting'
         : 'Disconnected';
+
+  $: mcpReadyCount = mcpServers.filter((server) => server.state === 'ready').length;
+  $: mcpConnectingCount = mcpServers.filter((server) => server.state === 'connecting').length;
+  $: mcpFailedCount = mcpServers.filter((server) => server.state === 'failed').length;
 
   $: {
     const query = commandBarQuery.trim().toLowerCase();
@@ -564,6 +588,9 @@
         applyPermissionsState(event.permissions, []);
         permissionsSavedAt = Date.now();
         return;
+      case 'mcp_status':
+        applyMcpStatus(event.mcp);
+        return;
       case 'error':
         onError(event.message ?? 'Unknown error');
     }
@@ -605,6 +632,15 @@
     permissionsErrors = validationErrors;
     permissionsSaving = false;
     permissionsLoaded = true;
+  }
+
+  function applyMcpStatus(status?: McpStatusSnapshot): void {
+    if (typeof status?.enabled === 'boolean') {
+      mcpEnabled = status.enabled;
+    }
+    if (Array.isArray(status?.servers)) {
+      mcpServers = [...status.servers];
+    }
   }
 
   function hydrateCurrentThread(history: HistoryMessage[]): void {
@@ -1076,6 +1112,14 @@
     return 'Failed';
   }
 
+  function mcpStateLabel(state: McpServerState): string {
+    if (state === 'ready') return 'Ready';
+    if (state === 'connecting') return 'Connecting';
+    if (state === 'failed') return 'Failed';
+    if (state === 'disabled') return 'Disabled';
+    return 'Pending';
+  }
+
   function toggleTool(entryId: string): void {
     entries = entries.map((entry) => {
       if (entry.kind !== 'tool' || entry.id !== entryId) {
@@ -1484,6 +1528,42 @@
           Open permissions settings
         </button>
       </div>
+
+      <section class="mcp-panel">
+        <p class="sidebar-label">MCP Servers</p>
+        {#if !mcpEnabled}
+          <p class="mcp-empty">MCP is disabled in config.</p>
+        {:else if mcpServers.length === 0}
+          <p class="mcp-empty">No MCP servers configured.</p>
+        {:else}
+          <p class="mcp-summary">
+            Ready {mcpReadyCount}/{mcpServers.length}
+            {#if mcpConnectingCount > 0}
+              · connecting {mcpConnectingCount}
+            {/if}
+            {#if mcpFailedCount > 0}
+              · failed {mcpFailedCount}
+            {/if}
+          </p>
+          <div class="mcp-list" role="list" aria-label="MCP server statuses">
+            {#each mcpServers as server (`mcp-${server.name}`)}
+              <article class="mcp-item" role="listitem" data-state={server.state}>
+                <div class="mcp-item-head">
+                  <span class="mcp-dot"></span>
+                  <span class="mcp-name">{server.name}</span>
+                  <span class="mcp-state">{mcpStateLabel(server.state)}</span>
+                </div>
+                {#if server.state === 'ready'}
+                  <p class="mcp-meta">Tools {server.tool_count ?? 0}</p>
+                {/if}
+                {#if server.error && server.state === 'failed'}
+                  <p class="mcp-error">{server.error}</p>
+                {/if}
+              </article>
+            {/each}
+          </div>
+        {/if}
+      </section>
     </aside>
 
     {#if activeView === 'chat'}

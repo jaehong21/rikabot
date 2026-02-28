@@ -13,6 +13,7 @@ use tokio::sync::{mpsc, oneshot};
 use crate::agent::AgentEvent;
 use crate::config::{PermissionsConfig, ToolPermissionsConfig};
 use crate::gateway::{ActiveRunState, AppState};
+use crate::mcp_runtime::McpStatusSnapshot;
 use crate::permissions::PermissionEngine;
 use crate::providers::ChatMessage;
 
@@ -50,6 +51,7 @@ pub async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> 
 async fn handle_socket(socket: WebSocket, state: AppState) {
     let (mut ws_sink, mut ws_stream) = socket.split();
     let (run_signal_tx, mut run_signal_rx) = mpsc::unbounded_channel::<Value>();
+    let mut mcp_status_rx = state.mcp_runtime.subscribe();
 
     let (mut current_session_id, mut history) = match hydrate_current_thread(&state).await {
         Ok((sid, initial_history)) => {
@@ -63,6 +65,12 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                 return;
             }
             if send_permissions_state(&mut ws_sink, &state, None)
+                .await
+                .is_err()
+            {
+                return;
+            }
+            if send_mcp_status(&mut ws_sink, state.mcp_runtime.snapshot())
                 .await
                 .is_err()
             {
@@ -258,8 +266,17 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                 if ws_sink
                     .send(Message::text(payload.to_string()))
                     .await
-                    .is_err()
+                .is_err()
                 {
+                    break;
+                }
+            }
+            status_update = mcp_status_rx.changed() => {
+                if status_update.is_err() {
+                    break;
+                }
+                let snapshot = mcp_status_rx.borrow().clone();
+                if send_mcp_status(&mut ws_sink, snapshot).await.is_err() {
                     break;
                 }
             }
@@ -574,6 +591,21 @@ async fn send_permissions_updated(
         .map_err(Into::into)
 }
 
+async fn send_mcp_status(
+    ws_sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    snapshot: McpStatusSnapshot,
+) -> anyhow::Result<()> {
+    let payload = serde_json::json!({
+        "type": "mcp_status",
+        "mcp": snapshot,
+    });
+
+    ws_sink
+        .send(Message::text(payload.to_string()))
+        .await
+        .map_err(Into::into)
+}
+
 async fn handle_permissions_set(
     state: &AppState,
     client_msg: &ClientMessage,
@@ -810,6 +842,7 @@ mod tests {
             config_store: Arc::new(crate::config_store::ConfigStore::new(
                 workspace.join("config.toml"),
             )),
+            mcp_runtime: Arc::new(crate::mcp_runtime::McpRuntime::new(false, &[])),
         }
     }
 
