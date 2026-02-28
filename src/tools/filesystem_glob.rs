@@ -1,15 +1,37 @@
 use super::*;
+use std::path::PathBuf;
 
 const MAX_RESULTS: usize = 1000;
 
 /// Filesystem glob tool.
 ///
 /// Finds files matching a glob pattern.
-pub struct FilesystemGlobTool;
+pub struct FilesystemGlobTool {
+    workspace_dir: Option<PathBuf>,
+}
 
 impl FilesystemGlobTool {
     pub fn new() -> Self {
-        Self
+        Self {
+            workspace_dir: None,
+        }
+    }
+
+    pub fn with_workspace_dir(workspace_dir: PathBuf) -> Self {
+        Self {
+            workspace_dir: Some(workspace_dir),
+        }
+    }
+
+    fn resolve_pattern(&self, pattern: &str) -> String {
+        let raw = PathBuf::from(pattern);
+        if raw.is_absolute() {
+            pattern.to_string()
+        } else if let Some(workspace_dir) = &self.workspace_dir {
+            workspace_dir.join(raw).to_string_lossy().to_string()
+        } else {
+            pattern.to_string()
+        }
     }
 }
 
@@ -20,7 +42,7 @@ impl Tool for FilesystemGlobTool {
     }
 
     fn description(&self) -> &str {
-        "Find files matching a glob pattern (for example: '**/*.rs')."
+        "Find files matching a glob pattern (for example: '**/*.rs'). Relative patterns are resolved from the workspace root."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -61,7 +83,9 @@ impl Tool for FilesystemGlobTool {
             .unwrap_or(MAX_RESULTS)
             .min(MAX_RESULTS);
 
-        let entries = match glob::glob(pattern) {
+        let resolved_pattern = self.resolve_pattern(pattern);
+
+        let entries = match glob::glob(&resolved_pattern) {
             Ok(entries) => entries,
             Err(e) => {
                 return Ok(ToolResult {
@@ -176,5 +200,28 @@ mod tests {
             .as_deref()
             .unwrap_or("")
             .contains("Invalid glob"));
+    }
+
+    #[tokio::test]
+    async fn filesystem_glob_resolves_relative_pattern_from_workspace_dir() {
+        let workspace = make_temp_dir("workspace_relative");
+        tokio::fs::create_dir_all(workspace.join("src"))
+            .await
+            .unwrap();
+        tokio::fs::write(workspace.join("src/main.rs"), "fn main() {}")
+            .await
+            .unwrap();
+
+        let tool = FilesystemGlobTool::with_workspace_dir(workspace.clone());
+        let result = tool
+            .execute(serde_json::json!({ "pattern": "**/*.rs" }))
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        let expected = workspace.join("src/main.rs").to_string_lossy().to_string();
+        assert!(result.output.contains(expected.as_str()));
+
+        let _ = tokio::fs::remove_dir_all(workspace).await;
     }
 }

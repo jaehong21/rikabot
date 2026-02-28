@@ -1,4 +1,5 @@
 use super::*;
+use std::path::PathBuf;
 use std::time::Duration;
 use tokio::process::Command;
 
@@ -9,12 +10,24 @@ use tokio::process::Command;
 /// to prevent memory issues.
 pub struct ShellTool {
     timeout_secs: u64,
+    workspace_dir: Option<PathBuf>,
 }
 
 impl ShellTool {
     /// Create a new ShellTool with the given timeout in seconds.
     pub fn new(timeout_secs: u64) -> Self {
-        Self { timeout_secs }
+        Self {
+            timeout_secs,
+            workspace_dir: None,
+        }
+    }
+
+    /// Create a ShellTool anchored to a workspace directory.
+    pub fn with_workspace_dir(timeout_secs: u64, workspace_dir: PathBuf) -> Self {
+        Self {
+            timeout_secs,
+            workspace_dir: Some(workspace_dir),
+        }
     }
 }
 
@@ -25,7 +38,7 @@ impl Tool for ShellTool {
     }
 
     fn description(&self) -> &str {
-        "Execute a shell command and return its output. Use this for running system commands, scripts, file operations, etc."
+        "Execute a shell command and return its output. Commands run from the workspace root."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -49,11 +62,14 @@ impl Tool for ShellTool {
 
         tracing::info!("Executing shell command: {}", command);
 
-        let result = tokio::time::timeout(
-            Duration::from_secs(self.timeout_secs),
-            Command::new("sh").arg("-c").arg(command).output(),
-        )
-        .await;
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg(command);
+        if let Some(workspace_dir) = &self.workspace_dir {
+            cmd.current_dir(workspace_dir);
+        }
+
+        let result =
+            tokio::time::timeout(Duration::from_secs(self.timeout_secs), cmd.output()).await;
 
         match result {
             Ok(Ok(output)) => {
@@ -108,6 +124,16 @@ impl Tool for ShellTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn make_temp_dir(name: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be monotonic")
+            .as_nanos();
+        std::env::temp_dir().join(format!("rikabot_test_shell_{name}_{nonce}"))
+    }
 
     #[test]
     fn shell_tool_name() {
@@ -201,5 +227,29 @@ mod tests {
             .await
             .expect("nonexistent command should return a result");
         assert!(!result.success);
+    }
+
+    #[tokio::test]
+    async fn shell_resolves_relative_commands_from_workspace_dir() {
+        let workspace = make_temp_dir("workspace_relative");
+        tokio::fs::create_dir_all(&workspace).await.unwrap();
+
+        let tool = ShellTool::with_workspace_dir(30, workspace.clone());
+        let result = tool
+            .execute(serde_json::json!({
+                "command": "pwd"
+            }))
+            .await
+            .expect("pwd should succeed");
+
+        assert!(result.success);
+        let output = result.output.trim();
+        let actual = tokio::fs::canonicalize(PathBuf::from(output))
+            .await
+            .unwrap();
+        let expected = tokio::fs::canonicalize(&workspace).await.unwrap();
+        assert_eq!(actual, expected);
+
+        let _ = tokio::fs::remove_dir_all(workspace).await;
     }
 }

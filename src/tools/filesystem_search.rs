@@ -8,11 +8,32 @@ const MAX_RESULTS: usize = 1000;
 /// Filesystem text search tool.
 ///
 /// Searches files under a path for lines matching a regex pattern.
-pub struct FilesystemSearchTool;
+pub struct FilesystemSearchTool {
+    workspace_dir: Option<PathBuf>,
+}
 
 impl FilesystemSearchTool {
     pub fn new() -> Self {
-        Self
+        Self {
+            workspace_dir: None,
+        }
+    }
+
+    pub fn with_workspace_dir(workspace_dir: PathBuf) -> Self {
+        Self {
+            workspace_dir: Some(workspace_dir),
+        }
+    }
+
+    fn resolve_path(&self, input: &str) -> PathBuf {
+        let path = PathBuf::from(input);
+        if path.is_absolute() {
+            path
+        } else if let Some(workspace_dir) = &self.workspace_dir {
+            workspace_dir.join(path)
+        } else {
+            path
+        }
     }
 }
 
@@ -36,7 +57,7 @@ impl Tool for FilesystemSearchTool {
                 },
                 "path": {
                     "type": "string",
-                    "description": "File or directory path to search in. Defaults to current directory.",
+                    "description": "File or directory path to search in. Defaults to workspace root.",
                     "default": "."
                 },
                 "include": {
@@ -112,12 +133,12 @@ impl Tool for FilesystemSearchTool {
             None => None,
         };
 
-        let root = PathBuf::from(search_path);
+        let root = self.resolve_path(search_path);
         if !root.exists() {
             return Ok(ToolResult {
                 success: false,
                 output: String::new(),
-                error: Some(format!("Search path does not exist: {}", search_path)),
+                error: Some(format!("Search path does not exist: {}", root.display())),
             });
         }
 
@@ -129,7 +150,8 @@ impl Tool for FilesystemSearchTool {
                     output: String::new(),
                     error: Some(format!(
                         "Failed to scan search path '{}': {}",
-                        search_path, e
+                        root.display(),
+                        e
                     )),
                 });
             }
@@ -306,5 +328,30 @@ mod tests {
             }))
             .await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn filesystem_search_defaults_to_workspace_dir_for_relative_root() {
+        let workspace = make_temp_dir("workspace_relative");
+        tokio::fs::create_dir_all(workspace.join("docs"))
+            .await
+            .unwrap();
+        tokio::fs::write(workspace.join("docs/guide.md"), "needle\n")
+            .await
+            .unwrap();
+
+        let tool = FilesystemSearchTool::with_workspace_dir(workspace.clone());
+        let result = tool
+            .execute(serde_json::json!({
+                "pattern": "needle",
+                "path": "."
+            }))
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        assert!(result.output.contains("guide.md:1:needle"));
+
+        let _ = tokio::fs::remove_dir_all(workspace).await;
     }
 }

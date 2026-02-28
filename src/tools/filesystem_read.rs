@@ -6,11 +6,32 @@ use std::path::PathBuf;
 ///
 /// Reads file contents from an absolute or relative path and returns numbered
 /// lines. Supports optional 1-based line offset and line limit.
-pub struct FilesystemReadTool;
+pub struct FilesystemReadTool {
+    workspace_dir: Option<PathBuf>,
+}
 
 impl FilesystemReadTool {
     pub fn new() -> Self {
-        Self
+        Self {
+            workspace_dir: None,
+        }
+    }
+
+    pub fn with_workspace_dir(workspace_dir: PathBuf) -> Self {
+        Self {
+            workspace_dir: Some(workspace_dir),
+        }
+    }
+
+    fn resolve_path(&self, input: &str) -> PathBuf {
+        let path = PathBuf::from(input);
+        if path.is_absolute() {
+            path
+        } else if let Some(workspace_dir) = &self.workspace_dir {
+            workspace_dir.join(path)
+        } else {
+            path
+        }
     }
 }
 
@@ -30,7 +51,7 @@ impl Tool for FilesystemReadTool {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Path to the file. Can be absolute or relative."
+                    "description": "Path to the file. Can be absolute or relative to the workspace root."
                 },
                 "offset": {
                     "type": "integer",
@@ -62,7 +83,7 @@ impl Tool for FilesystemReadTool {
             .and_then(|v| v.as_u64())
             .map(|v| usize::try_from(v).unwrap_or(usize::MAX));
 
-        let path_buf = PathBuf::from(path);
+        let path_buf = self.resolve_path(path);
         let read_path = match tokio::fs::canonicalize(&path_buf).await {
             Ok(p) => p,
             Err(_) => path_buf,
@@ -76,7 +97,8 @@ impl Tool for FilesystemReadTool {
                     output: String::new(),
                     error: Some(format!(
                         "Failed to read file metadata for '{}': {}",
-                        path, e
+                        read_path.display(),
+                        e
                     )),
                 });
             }
@@ -86,7 +108,10 @@ impl Tool for FilesystemReadTool {
             return Ok(ToolResult {
                 success: false,
                 output: String::new(),
-                error: Some(format!("Path '{}' points to a directory, not a file", path)),
+                error: Some(format!(
+                    "Path '{}' points to a directory, not a file",
+                    read_path.display()
+                )),
             });
         }
 
@@ -99,7 +124,11 @@ impl Tool for FilesystemReadTool {
                         return Ok(ToolResult {
                             success: false,
                             output: String::new(),
-                            error: Some(format!("Failed to read file '{}': {}", path, read_err)),
+                            error: Some(format!(
+                                "Failed to read file '{}': {}",
+                                read_path.display(),
+                                read_err
+                            )),
                         });
                     }
                 };
@@ -109,7 +138,11 @@ impl Tool for FilesystemReadTool {
                 return Ok(ToolResult {
                     success: false,
                     output: String::new(),
-                    error: Some(format!("Failed to read file '{}': {}", path, e)),
+                    error: Some(format!(
+                        "Failed to read file '{}': {}",
+                        read_path.display(),
+                        e
+                    )),
                 });
             }
         };
@@ -281,5 +314,27 @@ mod tests {
         assert!(result.output.contains("2: b"));
 
         let _ = tokio::fs::remove_dir_all(dir).await;
+    }
+
+    #[tokio::test]
+    async fn filesystem_read_resolves_relative_path_from_workspace_dir() {
+        let workspace = make_temp_dir("workspace_relative");
+        tokio::fs::create_dir_all(workspace.join("notes"))
+            .await
+            .unwrap();
+        tokio::fs::write(workspace.join("notes/today.md"), "hello workspace")
+            .await
+            .unwrap();
+
+        let tool = FilesystemReadTool::with_workspace_dir(workspace.clone());
+        let result = tool
+            .execute(serde_json::json!({ "path": "notes/today.md" }))
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        assert!(result.output.contains("1: hello workspace"));
+
+        let _ = tokio::fs::remove_dir_all(workspace).await;
     }
 }

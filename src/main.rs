@@ -25,12 +25,6 @@ async fn main() -> Result<()> {
         config.model
     );
 
-    // Create provider
-    let provider: Box<dyn providers::Provider> = providers::create_provider(&config)?;
-
-    // Create tool registry with default tools
-    let tool_registry = tools::default_registry();
-
     // Resolve workspace dir
     let workspace_dir = config
         .workspace_dir
@@ -44,6 +38,12 @@ async fn main() -> Result<()> {
         .ok_or_else(|| {
             anyhow::anyhow!("workspace_dir could not be resolved from config or HOME")
         })?;
+
+    // Create provider
+    let provider: Box<dyn providers::Provider> = providers::create_provider(&config)?;
+
+    // Create tool registry with default tools anchored to workspace.
+    let tool_registry = tools::default_registry(&workspace_dir);
 
     let prompt_manager = Arc::new(prompt::PromptManager::new(
         &workspace_dir,

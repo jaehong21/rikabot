@@ -4,11 +4,32 @@ use std::path::PathBuf;
 /// Filesystem file-write tool.
 ///
 /// Writes full content to a file path, creating parent directories as needed.
-pub struct FilesystemWriteTool;
+pub struct FilesystemWriteTool {
+    workspace_dir: Option<PathBuf>,
+}
 
 impl FilesystemWriteTool {
     pub fn new() -> Self {
-        Self
+        Self {
+            workspace_dir: None,
+        }
+    }
+
+    pub fn with_workspace_dir(workspace_dir: PathBuf) -> Self {
+        Self {
+            workspace_dir: Some(workspace_dir),
+        }
+    }
+
+    fn resolve_path(&self, input: &str) -> PathBuf {
+        let path = PathBuf::from(input);
+        if path.is_absolute() {
+            path
+        } else if let Some(workspace_dir) = &self.workspace_dir {
+            workspace_dir.join(path)
+        } else {
+            path
+        }
     }
 }
 
@@ -28,7 +49,7 @@ impl Tool for FilesystemWriteTool {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Path to write. Can be absolute or relative."
+                    "description": "Path to write. Can be absolute or relative to the workspace root."
                 },
                 "content": {
                     "type": "string",
@@ -58,14 +79,17 @@ impl Tool for FilesystemWriteTool {
             });
         }
 
-        let path_buf = PathBuf::from(path);
+        let path_buf = self.resolve_path(path);
 
         if let Ok(meta) = tokio::fs::metadata(&path_buf).await {
             if meta.is_dir() {
                 return Ok(ToolResult {
                     success: false,
                     output: String::new(),
-                    error: Some(format!("Path '{}' points to a directory, not a file", path)),
+                    error: Some(format!(
+                        "Path '{}' points to a directory, not a file",
+                        path_buf.display()
+                    )),
                 });
             }
         }
@@ -87,13 +111,17 @@ impl Tool for FilesystemWriteTool {
         match tokio::fs::write(&path_buf, content).await {
             Ok(()) => Ok(ToolResult {
                 success: true,
-                output: format!("Written {} bytes to {}", content.len(), path),
+                output: format!("Written {} bytes to {}", content.len(), path_buf.display()),
                 error: None,
             }),
             Err(e) => Ok(ToolResult {
                 success: false,
                 output: String::new(),
-                error: Some(format!("Failed to write file '{}': {}", path, e)),
+                error: Some(format!(
+                    "Failed to write file '{}': {}",
+                    path_buf.display(),
+                    e
+                )),
             }),
         }
     }
@@ -176,5 +204,28 @@ mod tests {
             }))
             .await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn filesystem_write_resolves_relative_path_from_workspace_dir() {
+        let workspace = make_temp_dir("workspace_relative");
+        tokio::fs::create_dir_all(&workspace).await.unwrap();
+
+        let tool = FilesystemWriteTool::with_workspace_dir(workspace.clone());
+        let result = tool
+            .execute(serde_json::json!({
+                "path": "notes/bootstrap.md",
+                "content": "workspace-root write"
+            }))
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        let written = tokio::fs::read_to_string(workspace.join("notes/bootstrap.md"))
+            .await
+            .unwrap();
+        assert_eq!(written, "workspace-root write");
+
+        let _ = tokio::fs::remove_dir_all(workspace).await;
     }
 }

@@ -1,6 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 pub mod filesystem_glob;
 pub mod filesystem_read;
@@ -86,12 +87,23 @@ impl ToolRegistry {
 // ── Default registry ────────────────────────────────────────────────────────
 
 /// Create a ToolRegistry pre-loaded with the default tools (shell).
-pub fn default_registry() -> ToolRegistry {
+pub fn default_registry(workspace_dir: &Path) -> ToolRegistry {
     let mut registry = ToolRegistry::new();
-    registry.register(Box::new(shell::ShellTool::new(30))); // 30 second timeout
-    registry.register(Box::new(filesystem_read::FilesystemReadTool::new()));
-    registry.register(Box::new(filesystem_write::FilesystemWriteTool::new()));
-    registry.register(Box::new(filesystem_glob::FilesystemGlobTool::new()));
-    registry.register(Box::new(filesystem_search::FilesystemSearchTool::new()));
+    registry.register(Box::new(shell::ShellTool::with_workspace_dir(
+        30,
+        workspace_dir.to_path_buf(),
+    ))); // 30 second timeout
+    registry.register(Box::new(
+        filesystem_read::FilesystemReadTool::with_workspace_dir(workspace_dir.to_path_buf()),
+    ));
+    registry.register(Box::new(
+        filesystem_write::FilesystemWriteTool::with_workspace_dir(workspace_dir.to_path_buf()),
+    ));
+    registry.register(Box::new(
+        filesystem_glob::FilesystemGlobTool::with_workspace_dir(workspace_dir.to_path_buf()),
+    ));
+    registry.register(Box::new(
+        filesystem_search::FilesystemSearchTool::with_workspace_dir(workspace_dir.to_path_buf()),
+    ));
     registry
 }
