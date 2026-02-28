@@ -113,7 +113,6 @@
 
   let inputValue = '';
   let isWaiting = false;
-  let isTyping = false;
   let connectionState: ConnectionState = 'connecting';
   let showReconnectOverlay = false;
   let toolOutputsExpanded = true;
@@ -308,7 +307,6 @@
     entries = hydrateEntriesFromHistory(history);
     resetActiveResponseState();
     finishCurrentBubble();
-    isTyping = false;
     setWaiting(false);
     scrollToBottom();
   }
@@ -438,8 +436,6 @@
   }
 
   function onChunk(text: string): void {
-    isTyping = false;
-
     if (!currentAssistantId) {
       const entry: MessageEntry = {
         id: nextId(),
@@ -466,7 +462,6 @@
   }
 
   function onToolCallStart(name: string, args: unknown): void {
-    isTyping = false;
     finishCurrentBubble();
     activeToolCallCount += 1;
 
@@ -518,7 +513,6 @@
   }
 
   function onDone(event: DoneEvent): void {
-    isTyping = false;
     const stats = buildResponseStats(event);
     const fullResponse = event.full_response ?? '';
 
@@ -552,7 +546,6 @@
   }
 
   function onError(message: string): void {
-    isTyping = false;
     finishCurrentBubble();
 
     const entry: MessageEntry = {
@@ -723,7 +716,6 @@
     }
     setWaiting(false);
     resetActiveResponseState();
-    isTyping = false;
     sendControl({ type: 'thread_switch', session_id: sessionId });
   }
 
@@ -823,7 +815,6 @@
       }
       setWaiting(false);
       resetActiveResponseState();
-      isTyping = false;
       sendControl({ type: 'thread_clear' });
       return true;
     }
@@ -838,7 +829,6 @@
       }
       setWaiting(false);
       resetActiveResponseState();
-      isTyping = false;
       sendControl({ type: 'thread_delete', session_id: currentSessionId });
       return true;
     }
@@ -881,7 +871,6 @@
     activeToolSuccessCount = 0;
     activeToolFailureCount = 0;
     setWaiting(true);
-    isTyping = true;
     finishCurrentBubble();
     scrollToBottom();
   }
@@ -1050,8 +1039,8 @@
           {/if}
         {/each}
 
-        {#if isTyping}
-          <div class="typing-indicator" aria-live="polite" aria-label="Assistant is typing">
+        {#if isWaiting}
+          <div class="typing-indicator" aria-live="polite" aria-label="Assistant is working">
             <span></span>
             <span></span>
             <span></span>
