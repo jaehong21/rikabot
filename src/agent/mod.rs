@@ -9,7 +9,7 @@ use crate::tools::ToolRegistry;
 // ── Constants ────────────────────────────────────────────────────────────────
 
 /// Maximum number of tool-call iterations before the agent stops.
-const MAX_ITERATIONS: usize = 20;
+const MAX_ITERATIONS: usize = 30;
 
 // ── Agent events (sent via channel to WebSocket / consumers) ─────────────────
 

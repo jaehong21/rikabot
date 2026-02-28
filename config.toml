@@ -4,7 +4,7 @@
 # temperature = 0.1
 
 provider = "openai"
-model = "gpt-5.3-codex-spark"
+model = "gpt-5.2"
 
 workspace_dir = "./workspace"
 
