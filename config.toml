@@ -3,37 +3,41 @@
 # Most settings below show defaults as comments. Uncomment to override.
 # -----------------------------------------------------------------------------
 
-# host = "127.0.0.1"           # default
-# port = 4728                  # default
-# system_prompt = "You are Rika, a helpful personal AI assistant. You can execute shell commands using the shell tool when needed." # default
-# model = "openai/gpt-5.2"     # default
-# temperature = 0.1            # default
-# workspace_dir = "./workspace" # default resolves to ~/.rika/workspace when omitted
+# host = "127.0.0.1"
+# port = 4728
+# system_prompt = "You are Rika, a helpful personal AI assistant. You can execute shell commands using the shell tool when needed."
+# temperature = 0.1
+
+workspace_dir = "./workspace" # default: ~/.rika/workspace
 
 # provider is required (no default)
 provider = "openai"
+model = "gpt-5.2"
 
 [providers.openai]
-# api_key = "YOUR_OPENAI_API_KEY"
-env_key = "OPENAI_API_KEY"
-# base_url = "https://api.openai.com/v1" # default
+base_url = "http://localhost:8317/v1" # default: https://api.openai.com/v1
+# env_key = "OPENAI_API_KEY"
+api_key = "xxx"
+
+[permissions]
+enabled = true
 
 # [providers.openrouter]
 # api_key = "YOUR_OPENROUTER_API_KEY"
 # env_key = "OPENROUTER_API_KEY"
 
 # [skills]
-# enabled = true # default
+# enabled = true
 
 # [prompt]
-# bootstrap_max_chars = 20000        # default
-# bootstrap_total_max_chars = 150000 # default
+# bootstrap_max_chars = 20000
+# bootstrap_total_max_chars = 150000
 
 # [permissions]
-# enabled = true # default
-#
-# [permissions.tools]
-# # IMPORTANT: when permissions are enabled and allow is empty, policy is default deny.
+# enabled = true
+
+[permissions.tools]
+# IMPORTANT: when permissions are enabled and allow is empty, policy is default deny.
 # allow = [
 #   "shell(command:git status *)",
 #   "shell(command:npm run *)",
@@ -44,39 +48,32 @@ env_key = "OPENAI_API_KEY"
 # ]
 
 # [mcp]
-# enabled = true # default
+# enabled = true
 
 # [[mcp.servers]]
+# enabled = true
 # name = "filesystem"
-# transport = "stdio" # "stdio" | "http" (default: "stdio")
-# auth_mode = "headers" # "headers" | "oauth"
+# transport = "stdio" # "stdio" | "http"
 # command = "bunx"
 # args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
-# tool_timeout_secs = 180 # default, max: 600
-# init_timeout_secs = 30  # default
-# enabled = true          # default
+# tool_timeout_secs = 180 # max: 600
+# init_timeout_secs = 30
 
-# [[mcp.servers]]
-# name = "linear"
-# transport = "http"
-# auth_mode = "oauth" # "headers" | "oauth"
-# url = "https://mcp.linear.app/mcp"
+[[mcp.servers]]
+name = "linear"
+transport = "http"
+auth_mode = "oauth" # "headers" | "oauth"
+url = "https://mcp.linear.app/mcp"
+# For headers mode
+# headers = { Authorization = "Bearer ${LINEAR_API_KEY}" }
 # For oauth mode, client_id is optional when provider supports dynamic client registration.
 # oauth_client_id = "your-client-id"
 # oauth_client_secret_env = "LINEAR_OAUTH_CLIENT_SECRET"
 # oauth_scopes = ["read"]
 # oauth_authorization_server = "https://mcp.linear.app"
-# For headers mode
-# headers = { Authorization = "Bearer ${LINEAR_API_KEY}" }
-# tool_timeout_secs = 180
-# init_timeout_secs = 30
-# enabled = true
 
-# [[mcp.servers]]
-# name = "notion"
-# transport = "http"
-# auth_mode = "oauth" # "headers" | "oauth"
-# url = "https://mcp.notion.com/mcp"
-# tool_timeout_secs = 180
-# init_timeout_secs = 30
-# enabled = true
+[[mcp.servers]]
+name = "notion"
+transport = "http"
+auth_mode = "oauth"
+url = "https://mcp.notion.com/mcp"
