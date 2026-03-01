@@ -3,10 +3,15 @@ import { ArrowUp, ChevronDown, ChevronRight, Square } from "lucide-react";
 
 import { useAppStore } from "@/context/app-store";
 import { renderMarkdown } from "@/lib/markdown";
-import type { MessageEntry, ToolEntry } from "@/types/app";
+import type { MessageEntry, ThreadRecord, ToolEntry } from "@/types/app";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Popover,
+  PopoverAnchor,
+  PopoverContent,
+} from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 
@@ -44,6 +49,114 @@ function toolStatusBadgeClass(status: ToolEntry["status"]): string {
   return "bg-foreground/10 text-foreground/80";
 }
 
+type SlashSuggestion = {
+  completion: string;
+  label: string;
+  hint: string;
+};
+
+const SLASH_COMMANDS: Array<{ command: string; hint: string }> = [
+  {
+    command: "help",
+    hint: "Show session and tool command usage",
+  },
+  {
+    command: "new",
+    hint: "Create a new chat session (optional title)",
+  },
+  {
+    command: "rename",
+    hint: "Rename the current chat session",
+  },
+  {
+    command: "clear",
+    hint: "Clear current session messages",
+  },
+  {
+    command: "delete",
+    hint: "Delete current session",
+  },
+  {
+    command: "stop",
+    hint: "Cancel active generation",
+  },
+  {
+    command: "tools",
+    hint: "Control tool output visibility",
+  },
+];
+
+const TOOL_SUBCOMMANDS: Array<{ value: string; hint: string }> = [
+  { value: "collapse", hint: "Collapse all tool outputs" },
+  { value: "expand", hint: "Expand all tool outputs" },
+  { value: "hide", hint: "Hide all tool output blocks" },
+  { value: "show", hint: "Show all tool output blocks" },
+];
+
+function getSlashSuggestions(
+  draft: string,
+  threads: ThreadRecord[],
+): SlashSuggestion[] {
+  if (!draft.startsWith("/")) {
+    return [];
+  }
+
+  const body = draft.slice(1);
+  if (!body.trim()) {
+    return SLASH_COMMANDS.map((command) => ({
+      completion: `/${command.command}`,
+      label: `/${command.command}`,
+      hint: command.hint,
+    }));
+  }
+
+  const normalizedBody = body.trimStart();
+  const firstSpace = normalizedBody.indexOf(" ");
+
+  if (firstSpace === -1) {
+    const query = normalizedBody.toLowerCase();
+    return SLASH_COMMANDS.filter((command) =>
+      command.command.startsWith(query),
+    ).map((command) => ({
+      completion: `/${command.command}`,
+      label: `/${command.command}`,
+      hint: command.hint,
+    }));
+  }
+
+  const command = normalizedBody.slice(0, firstSpace).toLowerCase();
+  const rawArg = normalizedBody.slice(firstSpace + 1).trimStart();
+
+  if (command === "tools") {
+    const query = rawArg.toLowerCase();
+    return TOOL_SUBCOMMANDS.filter((subcommand) =>
+      subcommand.value.startsWith(query),
+    ).map((subcommand) => ({
+      completion: `/tools ${subcommand.value}`,
+      label: `/tools ${subcommand.value}`,
+      hint: subcommand.hint,
+    }));
+  }
+
+  if (command === "rename") {
+    const query = rawArg.toLowerCase();
+    if (!query.trim()) {
+      return [];
+    }
+    return threads
+      .filter((thread) =>
+        thread.display_name.toLowerCase().includes(query.toLowerCase()),
+      )
+      .map((thread) => ({
+        completion: `/rename ${thread.display_name}`,
+        label: `/rename ${thread.display_name}`,
+        hint: "Existing session name",
+      }));
+  }
+
+  return [];
+}
+
 function summarizeToolGroup(entries: ToolEntry[]): string {
   const total = entries.length;
   const running = entries.filter((entry) => entry.status === "running").length;
@@ -72,6 +185,8 @@ export function ChatPage() {
   } = useAppStore();
 
   const [draft, setDraft] = useState("");
+  const [activeSlashSuggestionIndex, setActiveSlashSuggestionIndex] =
+    useState(-1);
   const [openToolGroups, setOpenToolGroups] = useState<Record<string, boolean>>(
     {},
   );
@@ -87,6 +202,26 @@ export function ChatPage() {
     state.connectionState === "connected" &&
     !state.killRequested;
   const isEmpty = state.entries.length === 0;
+  const slashSuggestions = useMemo(
+    () => getSlashSuggestions(draft, state.threads),
+    [draft, state.threads],
+  );
+  const showSlashSuggestions = slashSuggestions.length > 0;
+
+  useEffect(() => {
+    if (!showSlashSuggestions) {
+      setActiveSlashSuggestionIndex(-1);
+      return;
+    }
+    setActiveSlashSuggestionIndex((previous) => {
+      if (previous < 0) {
+        return 0;
+      }
+      return previous >= slashSuggestions.length
+        ? slashSuggestions.length - 1
+        : previous;
+    });
+  }, [showSlashSuggestions, slashSuggestions]);
 
   useEffect(() => {
     const container = transcriptRef.current;
@@ -151,6 +286,14 @@ export function ChatPage() {
     }
     node.style.height = "auto";
     node.style.height = `${Math.min(node.scrollHeight, 180)}px`;
+  };
+
+  const applySlashSuggestion = (suggestion: SlashSuggestion): void => {
+    setDraft(suggestion.completion);
+    window.requestAnimationFrame(() => {
+      autoResize();
+      textareaRef.current?.focus();
+    });
   };
 
   const groupedEntries = useMemo(() => {
@@ -421,24 +564,132 @@ export function ChatPage() {
             </h1>
           )}
           <div className="rounded-[1.5rem] border border-border/70 bg-input/70 px-4 py-3 transition-all duration-150 hover:border-border hover:bg-input hover:shadow-[0_8px_18px_rgba(20,20,20,0.06)] focus-within:border-border focus-within:bg-input focus-within:shadow-[0_8px_18px_rgba(20,20,20,0.08)]">
-            <Textarea
-              ref={textareaRef}
-              value={draft}
-              onChange={(event) => {
-                setDraft(event.currentTarget.value);
-                autoResize();
-              }}
-              rows={1}
-              className="max-h-[180px] min-h-[36px] resize-none border-0 bg-transparent px-1 py-2 text-sm shadow-none focus-visible:ring-0"
-              placeholder={isEmpty ? "How can I help you today?" : "Reply..."}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && !event.shiftKey) {
+            <Popover open={showSlashSuggestions} onOpenChange={() => {}}>
+              <PopoverAnchor asChild>
+                <div>
+                  <Textarea
+                    ref={textareaRef}
+                    value={draft}
+                    onChange={(event) => {
+                      setDraft(event.currentTarget.value);
+                      autoResize();
+                    }}
+                    rows={1}
+                    className="max-h-[180px] min-h-[36px] resize-none border-0 bg-transparent px-1 py-2 text-sm shadow-none focus-visible:ring-0"
+                    placeholder={
+                      isEmpty ? "How can I help you today?" : "Reply..."
+                    }
+                    onKeyDown={(event) => {
+                      if (showSlashSuggestions && slashSuggestions.length > 0) {
+                        if (event.key === "ArrowDown") {
+                          event.preventDefault();
+                          setActiveSlashSuggestionIndex((previous) =>
+                            previous < 0
+                              ? 0
+                              : (previous + 1) % slashSuggestions.length,
+                          );
+                          return;
+                        }
+
+                        if (event.key === "ArrowUp") {
+                          event.preventDefault();
+                          setActiveSlashSuggestionIndex((previous) =>
+                            previous <= 0
+                              ? slashSuggestions.length - 1
+                              : previous - 1,
+                          );
+                          return;
+                        }
+
+                        if (
+                          event.key === "Tab" &&
+                          activeSlashSuggestionIndex >= 0 &&
+                          slashSuggestions[activeSlashSuggestionIndex] !==
+                            undefined
+                        ) {
+                          event.preventDefault();
+                          const suggestion =
+                            slashSuggestions[activeSlashSuggestionIndex] ??
+                            slashSuggestions[0];
+                          if (suggestion) {
+                            applySlashSuggestion(suggestion);
+                          }
+                          return;
+                        }
+                      }
+
+                      if (event.key === "Enter" && !event.shiftKey) {
+                        const activeSuggestion =
+                          activeSlashSuggestionIndex >= 0
+                            ? slashSuggestions[activeSlashSuggestionIndex]
+                            : undefined;
+                        if (
+                          activeSuggestion &&
+                          activeSuggestion.completion !== draft.trim()
+                        ) {
+                          event.preventDefault();
+                          applySlashSuggestion(activeSuggestion);
+                          return;
+                        }
+                        event.preventDefault();
+                        submit();
+                      }
+                    }}
+                    disabled={state.isWaiting}
+                  />
+                </div>
+              </PopoverAnchor>
+              <PopoverContent
+                side="top"
+                align="start"
+                sideOffset={8}
+                onOpenAutoFocus={(event) => event.preventDefault()}
+                onCloseAutoFocus={(event) => {
                   event.preventDefault();
-                  submit();
-                }
-              }}
-              disabled={state.isWaiting}
-            />
+                  textareaRef.current?.focus();
+                }}
+                className="p-0"
+              >
+                <div
+                  role="listbox"
+                  aria-label="Slash command suggestions"
+                  className="scroll-soft max-h-44 overflow-y-auto rounded-xl"
+                >
+                  {slashSuggestions.map((suggestion, index) => {
+                    const isActive = index === activeSlashSuggestionIndex;
+                    return (
+                      <button
+                        key={suggestion.completion}
+                        type="button"
+                        role="option"
+                        aria-selected={isActive}
+                        onMouseDown={(event) => {
+                          event.preventDefault();
+                          applySlashSuggestion(suggestion);
+                        }}
+                        onMouseEnter={() =>
+                          setActiveSlashSuggestionIndex(index)
+                        }
+                        className={cn(
+                          "w-full rounded-lg px-3 py-2 text-left text-sm transition-colors",
+                          isActive
+                            ? "bg-muted/70"
+                            : "text-foreground/90 hover:bg-muted/45",
+                          "focus-visible:outline-none focus-visible:ring-0 focus:outline-none",
+                        )}
+                      >
+                        <div className="truncate font-mono text-foreground">
+                          {suggestion.label}
+                        </div>
+                        <div className="truncate text-xs text-muted-foreground">
+                          {suggestion.hint}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </PopoverContent>
+            </Popover>
             <div className="mt-3 flex items-center justify-end gap-2">
               {canKill && (
                 <Button

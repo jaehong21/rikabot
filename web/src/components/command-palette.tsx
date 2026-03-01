@@ -1,18 +1,7 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
-import {
-  BookOpenText,
-  CirclePlus,
-  Eraser,
-  Eye,
-  EyeOff,
-  PanelBottomOpen,
-  PanelTopOpen,
-  Settings2,
-  Square,
-  Trash2,
-} from "lucide-react";
+import { Settings2 } from "lucide-react";
 
 import {
   Command,
@@ -22,7 +11,6 @@ import {
   CommandItem,
   CommandList,
   CommandSeparator,
-  CommandShortcut,
 } from "@/components/ui/command";
 import { useAppStore } from "@/context/app-store";
 import { cn } from "@/lib/utils";
@@ -34,33 +22,8 @@ type CommandPaletteProps = {
 
 export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
   const navigate = useNavigate();
-  const { state, runSlashCommand, switchThread } = useAppStore();
+  const { switchThread, state } = useAppStore();
   const [search, setSearch] = useState("");
-
-  const activeThread = useMemo(
-    () => state.threads.find((thread) => thread.id === state.currentSessionId),
-    [state.currentSessionId, state.threads],
-  );
-  const trimmedSearch = search.trim();
-  const lowerSearch = trimmedSearch.toLowerCase();
-  const looksLikeCommandQuery =
-    /^(new|chat|create|rename|clear|delete|remove|stop|settings|tool|collapse|expand|show|hide|help|session|thread|switch|open|go|coll|del|ren)\b/.test(
-      lowerSearch,
-    );
-  const renamePrefixedTarget = lowerSearch.startsWith("rename ")
-    ? trimmedSearch.slice(7).trim()
-    : "";
-  const newPrefixedName = lowerSearch.startsWith("new ")
-    ? trimmedSearch.slice(4).trim()
-    : lowerSearch.startsWith("chat ")
-      ? trimmedSearch.slice(5).trim()
-      : lowerSearch.startsWith("create ")
-        ? trimmedSearch.slice(7).trim()
-        : "";
-  const freeTextTarget =
-    trimmedSearch.length > 0 && !looksLikeCommandQuery ? trimmedSearch : "";
-  const newChatName = newPrefixedName || freeTextTarget;
-  const renameTarget = renamePrefixedTarget || freeTextTarget;
 
   const handleOpenChange = (nextOpen: boolean): void => {
     onOpenChange(nextOpen);
@@ -73,15 +36,11 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
     handleOpenChange(false);
   };
 
-  const runSlash = (
-    command: string,
-    options?: { navigateTo?: "/" | "/settings" | "/threads" },
-  ): void => {
-    runSlashCommand(command);
-    if (options?.navigateTo) {
-      navigate({ to: options.navigateTo });
-    }
+  const closeAndNavigate = (to?: "/" | "/settings" | "/threads"): void => {
     closeAndReset();
+    if (to) {
+      navigate({ to });
+    }
   };
 
   return (
@@ -100,134 +59,21 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
             <CommandInput
               value={search}
               onValueChange={setSearch}
-              placeholder="Search commands, sessions, and routes..."
+              placeholder="Search sessions and routes..."
             />
             <CommandList className="scroll-soft max-h-[min(60vh,520px)]">
               <CommandEmpty>No results found.</CommandEmpty>
 
-              <CommandGroup heading="Quick actions">
-                <CommandItem
-                  value="new chat"
-                  keywords={["create", "thread", "session", "start"]}
-                  forceMount={Boolean(newChatName)}
-                  onSelect={() =>
-                    runSlash(newChatName ? `/new ${newChatName}` : "/new", {
-                      navigateTo: "/",
-                    })
-                  }
-                >
-                  <CirclePlus className="h-4 w-4 shrink-0" />
-                  <span className="truncate">
-                    {newChatName ? `New chat "${newChatName}"` : "New chat"}
-                  </span>
-                  <CommandShortcut>Enter</CommandShortcut>
-                </CommandItem>
-
+              <CommandGroup heading="Navigation">
                 <CommandItem
                   value="go settings"
                   keywords={["preferences", "config", "options"]}
                   onSelect={() => {
-                    navigate({ to: "/settings" });
-                    closeAndReset();
+                    closeAndNavigate("/settings");
                   }}
                 >
                   <Settings2 className="h-4 w-4 shrink-0" />
                   <span>Go to settings</span>
-                </CommandItem>
-
-                <CommandItem
-                  value="slash help"
-                  keywords={["commands", "usage"]}
-                  onSelect={() => runSlash("/help", { navigateTo: "/" })}
-                >
-                  <BookOpenText className="h-4 w-4 shrink-0" />
-                  <span>Show slash command help</span>
-                </CommandItem>
-              </CommandGroup>
-
-              <CommandSeparator />
-
-              <CommandGroup heading="Session actions">
-                <CommandItem
-                  value="rename current session"
-                  keywords={["title", "name", "thread"]}
-                  forceMount={Boolean(renameTarget)}
-                  disabled={!activeThread || !renameTarget}
-                  onSelect={() => runSlash(`/rename ${renameTarget}`)}
-                >
-                  <PanelTopOpen className="h-4 w-4 shrink-0" />
-                  <span className="truncate">
-                    {renameTarget
-                      ? `Rename current session "${renameTarget}"`
-                      : "Rename current session"}
-                  </span>
-                </CommandItem>
-
-                <CommandItem
-                  value="clear current context"
-                  keywords={["reset", "wipe", "thread"]}
-                  disabled={!activeThread}
-                  onSelect={() => runSlash("/clear", { navigateTo: "/" })}
-                >
-                  <Eraser className="h-4 w-4 shrink-0" />
-                  <span>Clear current context</span>
-                </CommandItem>
-
-                <CommandItem
-                  value="delete current session"
-                  keywords={["remove", "thread", "destroy"]}
-                  disabled={!activeThread}
-                  onSelect={() => runSlash("/delete", { navigateTo: "/" })}
-                >
-                  <Trash2 className="h-4 w-4 shrink-0" />
-                  <span>Delete current session</span>
-                </CommandItem>
-
-                <CommandItem
-                  value="stop response"
-                  keywords={["cancel", "interrupt"]}
-                  disabled={!state.isWaiting}
-                  onSelect={() => runSlash("/stop")}
-                >
-                  <Square className="h-4 w-4 shrink-0" />
-                  <span>Stop active response</span>
-                </CommandItem>
-              </CommandGroup>
-
-              <CommandSeparator />
-
-              <CommandGroup heading="Tool view">
-                <CommandItem
-                  value="expand tool outputs"
-                  keywords={["tools", "open", "show"]}
-                  onSelect={() => runSlash("/tools expand")}
-                >
-                  <PanelBottomOpen className="h-4 w-4 shrink-0" />
-                  <span>Expand all tool outputs</span>
-                </CommandItem>
-                <CommandItem
-                  value="collapse tool outputs"
-                  keywords={["tools", "close", "hide"]}
-                  onSelect={() => runSlash("/tools collapse")}
-                >
-                  <PanelTopOpen className="h-4 w-4 shrink-0" />
-                  <span>Collapse all tool outputs</span>
-                </CommandItem>
-                <CommandItem
-                  value="show tool call blocks"
-                  keywords={["tools", "visible"]}
-                  onSelect={() => runSlash("/tools show")}
-                >
-                  <Eye className="h-4 w-4 shrink-0" />
-                  <span>Show tool call blocks</span>
-                </CommandItem>
-                <CommandItem
-                  value="hide tool call blocks"
-                  keywords={["tools", "invisible"]}
-                  onSelect={() => runSlash("/tools hide")}
-                >
-                  <EyeOff className="h-4 w-4 shrink-0" />
-                  <span>Hide tool call blocks</span>
                 </CommandItem>
               </CommandGroup>
 
