@@ -2,6 +2,38 @@
 @tailwind components;
 @tailwind utilities;
 
+@font-face {
+  font-family: "Söhne";
+  src: url("./assets/fonts/sohne-regular.otf") format("opentype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Söhne";
+  src: url("./assets/fonts/sohne-italic.otf") format("opentype");
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Söhne";
+  src: url("./assets/fonts/sohne-semibold.otf") format("opentype");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Söhne";
+  src: url("./assets/fonts/sohne-bold.otf") format("opentype");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
   --background: 250 249 245;
   --foreground: 20 20 20;
@@ -51,6 +83,11 @@ body {
 
 .message-prose code {
   @apply rounded bg-foreground/10 px-1.5 py-0.5 font-mono text-[0.8em];
+}
+
+.message-prose strong,
+.message-prose b {
+  font-weight: 600;
 }
 
 .status-dot {

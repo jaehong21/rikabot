@@ -172,7 +172,7 @@ export function ChatPage() {
                         )}
                       >
                         <div
-                          className="message-prose text-sm"
+                          className="message-prose text-sm leading-5 [&_br]:leading-4"
                           dangerouslySetInnerHTML={{ __html: renderMarkdown(entry.text) }}
                         />
                       </article>
@@ -184,7 +184,7 @@ export function ChatPage() {
                   <article
                     key={entry.id}
                     className={cn(
-                      "message-prose max-w-none text-[15px] leading-7 text-foreground",
+                      "message-prose max-w-none text-[15px] leading-6 text-foreground [&_br]:leading-4",
                       entry.error && "text-primary",
                     )}
                   >
@@ -193,7 +193,9 @@ export function ChatPage() {
                 );
               }
 
-              const hasApproval = item.entries.some((entry) => entry.awaitingApproval && entry.approval);
+              const hasApproval = item.entries.some(
+                (entry) => entry.awaitingApproval && entry.approval,
+              );
               if (!state.showToolCalls && !hasApproval) {
                 return null;
               }
@@ -205,7 +207,10 @@ export function ChatPage() {
                   <button
                     type="button"
                     onClick={() =>
-                      setOpenToolGroups((prev) => ({ ...prev, [item.id]: !(prev[item.id] ?? true) }))
+                      setOpenToolGroups((prev) => ({
+                        ...prev,
+                        [item.id]: !(prev[item.id] ?? true),
+                      }))
                     }
                     className="inline-flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
                   >
@@ -220,7 +225,10 @@ export function ChatPage() {
                   {(groupOpen || hasApproval) && (
                     <div className="space-y-2 pl-2">
                       {item.entries.map((entry) => (
-                        <article key={entry.id} className="rounded-xl border border-border/70 bg-input/60 p-3">
+                        <article
+                          key={entry.id}
+                          className="rounded-xl border border-border/70 bg-input/60 p-3"
+                        >
                           <button
                             type="button"
                             onClick={() => toggleToolOpen(entry.id)}
@@ -268,8 +276,8 @@ export function ChatPage() {
                                 <section className="rounded-lg border border-border bg-input p-3">
                                   <p className="text-sm font-semibold">Approval required</p>
                                   <p className="mt-1 text-xs text-muted-foreground">
-                                    This tool call was blocked by permissions. Persist a rule,
-                                    allow once, or deny.
+                                    This tool call was blocked by permissions. Persist a rule, allow
+                                    once, or deny.
                                   </p>
                                   <Input
                                     value={entry.approval.allowRuleInput}

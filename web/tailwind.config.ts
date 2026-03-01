@@ -51,22 +51,8 @@ const config: Config = {
         sm: "calc(var(--radius) - 4px)",
       },
       fontFamily: {
-        sans: [
-          '"Fira Code"',
-          '"Fira Mono"',
-          "Menlo",
-          "Consolas",
-          '"DejaVu Sans Mono"',
-          "monospace",
-        ],
-        display: [
-          '"Fira Code"',
-          '"Fira Mono"',
-          "Menlo",
-          "Consolas",
-          '"DejaVu Sans Mono"',
-          "monospace",
-        ],
+        sans: ['"Söhne"', "ui-sans-serif", "sans-serif"],
+        display: ['"Söhne"', "ui-sans-serif", "sans-serif"],
         mono: [
           '"Fira Code"',
           '"Fira Mono"',
