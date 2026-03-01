@@ -207,7 +207,7 @@ export function ChatPage() {
                         )}
                       >
                         <div
-                          className="message-prose text-sm leading-5 [&_br]:leading-4"
+                          className="message-prose text-sm leading-5"
                           dangerouslySetInnerHTML={{
                             __html: renderMarkdown(entry.text),
                           }}
@@ -221,7 +221,7 @@ export function ChatPage() {
                   <article
                     key={entry.id}
                     className={cn(
-                      "message-prose max-w-none text-[15px] leading-6 text-foreground [&_br]:leading-4",
+                      "message-prose max-w-none text-[15px] leading-6 text-foreground",
                       entry.error && "text-primary",
                     )}
                   >

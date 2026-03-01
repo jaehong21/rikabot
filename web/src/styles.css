@@ -85,6 +85,98 @@ body {
   @apply rounded bg-foreground/10 px-1.5 py-0.5 font-mono text-[0.8em];
 }
 
+.message-prose {
+  @apply break-words;
+}
+
+.message-prose p + p {
+  @apply mt-3;
+}
+
+.message-prose h1,
+.message-prose h2,
+.message-prose h3,
+.message-prose h4 {
+  @apply mt-5 font-semibold leading-tight;
+}
+
+.message-prose h1 {
+  @apply text-[1.3em];
+}
+
+.message-prose h2 {
+  @apply text-[1.2em];
+}
+
+.message-prose h3 {
+  @apply text-[1.1em];
+}
+
+.message-prose h4 {
+  @apply text-[1.03em];
+}
+
+.message-prose h1 + p,
+.message-prose h2 + p,
+.message-prose h3 + p,
+.message-prose h4 + p {
+  @apply mt-2;
+}
+
+.message-prose ul,
+.message-prose ol {
+  @apply my-3 pl-6;
+}
+
+.message-prose ul {
+  @apply list-disc;
+}
+
+.message-prose ol {
+  @apply list-decimal;
+}
+
+.message-prose li + li {
+  @apply mt-1;
+}
+
+.message-prose blockquote {
+  @apply my-3 border-l-2 border-border pl-3 opacity-90;
+}
+
+.message-prose a {
+  @apply text-primary underline underline-offset-2;
+}
+
+.message-prose hr {
+  @apply my-4 border-0 border-t border-border;
+}
+
+.message-prose table {
+  @apply my-4 block w-full overflow-x-auto border-collapse text-left text-[0.95em];
+}
+
+.message-prose thead {
+  @apply border-b border-border;
+}
+
+.message-prose th {
+  @apply px-0 py-2 font-semibold;
+}
+
+.message-prose td {
+  @apply border-b border-border/70 px-0 py-2 align-top;
+}
+
+.message-prose th:not(:last-child),
+.message-prose td:not(:last-child) {
+  @apply pr-6;
+}
+
+.message-prose tbody tr:last-child td {
+  @apply border-b-0;
+}
+
 .message-prose strong,
 .message-prose b {
   font-weight: 600;
