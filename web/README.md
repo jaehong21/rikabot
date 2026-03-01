@@ -1,6 +1,6 @@
-# Rika Web (Svelte 5)
+# Rika Web (React + Rsbuild)
 
-Svelte 5 + Vite frontend for Rikabot.
+React + TanStack Router frontend for Rikabot with static output in `web/dist`.
 
 ## Development
 
