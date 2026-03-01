@@ -1,14 +1,55 @@
-import { ShieldCheck, Server, SlidersHorizontal, Sparkles } from 'lucide-react';
+import { ChevronLeft } from 'lucide-react';
+import { useNavigate } from '@tanstack/react-router';
+import { useMemo, useState } from 'react';
 
 import { useAppStore } from '@/context/app-store';
 import { formatTime } from '@/lib/utils';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Switch } from '@/components/ui/switch';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
+
+type SettingsSectionId = 'general' | 'permissions' | 'skills' | 'mcp';
+
+type SettingsSection = {
+  id: SettingsSectionId;
+  label: string;
+};
+
+const SETTINGS_SECTIONS: SettingsSection[] = [
+  { id: 'general', label: 'General' },
+  { id: 'permissions', label: 'Permissions' },
+  { id: 'skills', label: 'Skills' },
+  { id: 'mcp', label: 'MCP Servers' },
+];
+
+type SectionHeaderProps = {
+  title: string;
+};
+
+function SectionHeader({ title }: SectionHeaderProps) {
+  return (
+    <h2 className="text-lg font-semibold tracking-tight">{title}</h2>
+  );
+}
+
+type SettingRowProps = {
+  title: string;
+  description: string;
+  control?: React.ReactNode;
+};
+
+function SettingRow({ title, description, control }: SettingRowProps) {
+  return (
+    <div className="flex flex-wrap items-start justify-between gap-3 py-3">
+      <div className="space-y-1">
+        <p className="font-medium">{title}</p>
+        <p className="text-sm text-foreground/70">{description}</p>
+      </div>
+      {control ? <div className="shrink-0 pt-0.5">{control}</div> : null}
+    </div>
+  );
+}
 
 function mcpStateLabel(state: string): string {
   if (state === 'ready') return 'Ready';
@@ -19,6 +60,7 @@ function mcpStateLabel(state: string): string {
 }
 
 export function SettingsPage() {
+  const navigate = useNavigate();
   const {
     state,
     setShowToolCalls,
@@ -27,76 +69,75 @@ export function SettingsPage() {
     updatePermissionsField,
     updatePermissionsEnabled,
   } = useAppStore();
+  const [activeSection, setActiveSection] = useState<SettingsSectionId>('general');
 
-  const readyCount = state.mcpServers.filter((server) => server.state === 'ready').length;
+  const readyCount = useMemo(
+    () => state.mcpServers.filter((server) => server.state === 'ready').length,
+    [state.mcpServers],
+  );
 
   return (
     <ScrollArea className="h-full">
-      <div className="mx-auto w-full max-w-5xl space-y-4 px-3 py-4 md:px-6 md:py-6">
-        <Tabs defaultValue="general" className="space-y-4">
-          <TabsList className="w-full justify-start overflow-auto">
-            <TabsTrigger value="general" className="gap-1.5">
-              <SlidersHorizontal className="h-4 w-4" />
-              General
-            </TabsTrigger>
-            <TabsTrigger value="permissions" className="gap-1.5">
-              <ShieldCheck className="h-4 w-4" />
-              Permissions
-            </TabsTrigger>
-            <TabsTrigger value="skills" className="gap-1.5">
-              <Sparkles className="h-4 w-4" />
-              Skills
-            </TabsTrigger>
-            <TabsTrigger value="mcp" className="gap-1.5">
-              <Server className="h-4 w-4" />
-              MCP Servers
-            </TabsTrigger>
-          </TabsList>
+      <div className="mx-auto w-full max-w-6xl px-4 py-6 md:px-8 md:py-8">
+        <div className="mb-8 flex items-center gap-2">
+          <button
+            type="button"
+            aria-label="Back to chat"
+            className="rounded-sm p-1 text-foreground/70 transition-colors hover:bg-foreground/5 hover:text-foreground"
+            onClick={() => navigate({ to: '/' })}
+          >
+            <ChevronLeft className="h-5 w-5" />
+          </button>
+          <h1 className="text-4xl font-semibold leading-none tracking-tight">Settings</h1>
+        </div>
 
-          <TabsContent value="general" className="space-y-4">
-            <Card>
-              <CardHeader>
-                <CardTitle>Experience</CardTitle>
-                <CardDescription>Control transcript rendering and workspace behavior.</CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <label className="flex items-center justify-between gap-3 rounded-lg border border-border/70 bg-background/70 p-3">
-                  <div>
-                    <p className="font-medium">Show tool call cards</p>
-                    <p className="text-sm text-muted-foreground">Display structured tool activity inline in chat.</p>
-                  </div>
-                  <Switch checked={state.showToolCalls} onCheckedChange={setShowToolCalls} />
-                </label>
+        <div className="grid gap-10 md:grid-cols-[180px_minmax(0,1fr)]">
+          <nav className="space-y-1">
+            {SETTINGS_SECTIONS.map((section) => {
+              const selected = section.id === activeSection;
+              return (
+                <button
+                  key={section.id}
+                  type="button"
+                  className={[
+                    'flex w-full min-w-0 items-center gap-2 overflow-hidden rounded-md px-3 py-2 text-left text-sm transition-colors',
+                    'hover:bg-foreground/5',
+                    selected ? 'bg-foreground/10 text-foreground' : 'text-foreground/90',
+                  ].join(' ')}
+                  onClick={() => setActiveSection(section.id)}
+                >
+                  <span className="truncate">{section.label}</span>
+                </button>
+              );
+            })}
+          </nav>
 
-                <label className="flex items-center justify-between gap-3 rounded-lg border border-border/70 bg-background/70 p-3">
-                  <div>
-                    <p className="font-medium">Expand tool outputs by default</p>
-                    <p className="text-sm text-muted-foreground">Open each tool card with full arguments and output.</p>
-                  </div>
-                  <Switch checked={state.toolOutputsExpanded} onCheckedChange={setToolOutputsExpanded} />
-                </label>
-              </CardContent>
-            </Card>
-          </TabsContent>
+          <section className="space-y-6 pb-8">
+            {activeSection === 'general' && (
+              <div className="space-y-8">
+                <SectionHeader title="General desktop settings" />
+                <SettingRow
+                  title="Show tool call cards"
+                  description="Display structured tool activity inline in chat."
+                  control={<Switch checked={state.showToolCalls} onCheckedChange={setShowToolCalls} />}
+                />
+                <SettingRow
+                  title="Expand tool outputs by default"
+                  description="Open each tool card with full arguments and output."
+                  control={<Switch checked={state.toolOutputsExpanded} onCheckedChange={setToolOutputsExpanded} />}
+                />
+              </div>
+            )}
 
-          <TabsContent value="permissions" className="space-y-4">
-            <Card>
-              <CardHeader>
-                <CardTitle>Tool Permissions</CardTitle>
-                <CardDescription>
-                  Configure allow and deny patterns. Wildcards (`*`) are supported for tool names and argument patterns.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <label className="flex items-center justify-between gap-3 rounded-lg border border-border/70 bg-background/70 p-3">
-                  <div>
-                    <p className="font-medium">Enable permissions policy</p>
-                    <p className="text-sm text-muted-foreground">When disabled, tools run without explicit rule checks.</p>
-                  </div>
-                  <Switch checked={state.permissionsEnabled} onCheckedChange={updatePermissionsEnabled} />
-                </label>
-
-                <div className="grid gap-3 lg:grid-cols-2">
+            {activeSection === 'permissions' && (
+              <div className="space-y-6">
+                <SectionHeader title="Tool permissions" />
+                <SettingRow
+                  title="Enable permissions policy"
+                  description="When disabled, tools run without explicit rule checks."
+                  control={<Switch checked={state.permissionsEnabled} onCheckedChange={updatePermissionsEnabled} />}
+                />
+                <div className="grid gap-3 py-2 lg:grid-cols-2">
                   <label className="space-y-2">
                     <span className="text-sm font-medium">Allow rules</span>
                     <Textarea
@@ -121,88 +162,75 @@ export function SettingsPage() {
                 </div>
 
                 {state.permissionsErrors.length > 0 && (
-                  <div className="space-y-1 rounded-lg border border-destructive/35 bg-destructive/10 p-3 text-sm text-destructive">
+                  <div className="space-y-1 py-2 text-sm text-destructive">
                     {state.permissionsErrors.map((error) => (
                       <p key={error}>{error}</p>
                     ))}
                   </div>
                 )}
 
-                <div className="flex flex-wrap items-center gap-3">
-                  <Button onClick={savePermissions} disabled={!state.permissionsLoaded || state.permissionsSaving}>
+                <div className="flex flex-wrap items-center gap-3 py-2">
+                  <Button
+                    onClick={savePermissions}
+                    disabled={!state.permissionsLoaded || state.permissionsSaving}
+                    className="bg-foreground text-input hover:bg-foreground/90"
+                  >
                     {state.permissionsSaving ? 'Saving...' : 'Save permissions'}
                   </Button>
                   {state.permissionsSavedAt && (
-                    <span className="text-sm text-muted-foreground">Saved at {formatTime(state.permissionsSavedAt)}</span>
+                    <span className="text-sm text-foreground/70">Saved at {formatTime(state.permissionsSavedAt)}</span>
                   )}
                 </div>
-              </CardContent>
-            </Card>
-          </TabsContent>
+              </div>
+            )}
 
-          <TabsContent value="skills" className="space-y-4">
-            <Card>
-              <CardHeader>
-                <CardTitle>Skill Sources</CardTitle>
-                <CardDescription>
-                  Skills are resolved from workspace `AGENTS.md` and skill directories. This view summarizes available surfaces.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-3 text-sm">
-                <div className="rounded-lg border border-border/70 bg-background/70 p-3">
+            {activeSection === 'skills' && (
+              <div className="space-y-6">
+                <SectionHeader title="Skill sources" />
+                <div className="space-y-1 py-2">
                   <p className="font-medium">Workspace instructions</p>
-                  <p className="text-muted-foreground">`AGENTS.md` defines local guidance and trigger rules for skill usage.</p>
+                  <p className="text-sm text-foreground/70">
+                    `AGENTS.md` defines local guidance and trigger rules for skill usage.
+                  </p>
                 </div>
-                <div className="rounded-lg border border-border/70 bg-background/70 p-3">
+                <div className="space-y-1 py-2">
                   <p className="font-medium">Installed skill packs</p>
-                  <p className="text-muted-foreground">
-                    Frontend and behavior skills can be loaded per-turn without backend changes.
+                  <p className="text-sm text-foreground/70">
+                    Frontend and behavior skills can be loaded per turn without backend changes.
                   </p>
                 </div>
-              </CardContent>
-            </Card>
-          </TabsContent>
+              </div>
+            )}
 
-          <TabsContent value="mcp" className="space-y-4">
-            <Card>
-              <CardHeader>
-                <CardTitle>MCP Server Status</CardTitle>
-                <CardDescription>
-                  Ready {readyCount}/{state.mcpServers.length}. Inspect server reachability, tool counts, and errors.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-2">
-                {!state.mcpEnabled && (
-                  <p className="rounded-lg border border-border/70 bg-background/70 p-3 text-sm text-muted-foreground">
-                    MCP is disabled in config.
-                  </p>
-                )}
+            {activeSection === 'mcp' && (
+              <div className="space-y-5">
+                <SectionHeader title="MCP server status" />
+                <p className="text-sm text-foreground/70">
+                  Ready {readyCount}/{state.mcpServers.length}
+                </p>
+
+                {!state.mcpEnabled && <p className="py-2 text-sm text-foreground/70">MCP is disabled in config.</p>}
 
                 {state.mcpEnabled && state.mcpServers.length === 0 && (
-                  <p className="rounded-lg border border-border/70 bg-background/70 p-3 text-sm text-muted-foreground">
-                    No MCP servers configured.
-                  </p>
+                  <p className="py-2 text-sm text-foreground/70">No MCP servers configured.</p>
                 )}
 
                 {state.mcpEnabled &&
                   state.mcpServers.map((server) => (
-                    <div
-                      key={server.name}
-                      className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border/70 bg-background/70 p-3"
-                    >
-                      <div>
+                    <div key={server.name} className="flex flex-wrap items-center justify-between gap-2 py-2">
+                      <div className="space-y-1">
                         <p className="font-medium">{server.name}</p>
-                        <p className="text-sm text-muted-foreground">
+                        <p className="text-sm text-foreground/70">
                           {server.state === 'ready' ? `Tools ${server.tool_count ?? 0}` : server.error || 'No details'}
                         </p>
                       </div>
-                      <Badge variant={server.state === 'failed' ? 'destructive' : 'outline'}>{mcpStateLabel(server.state)}</Badge>
+                      <span className="text-sm text-foreground/70">{mcpStateLabel(server.state)}</span>
                     </div>
                   ))}
-              </CardContent>
-            </Card>
-          </TabsContent>
-        </Tabs>
+              </div>
+            )}
+          </section>
+        </div>
       </div>
     </ScrollArea>
   );

@@ -1,5 +1,3 @@
-@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@300..700&display=swap');
-
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -25,6 +23,7 @@
   --input: 255 255 255;
   --ring: 198 96 63;
   --user-bubble: 240 238 230;
+  --switch-on: 58 141 222;
   --radius: 0.95rem;
 }
 
@@ -40,24 +39,6 @@ body,
 
 body {
   @apply bg-background text-foreground antialiased font-sans;
-  background-image:
-    radial-gradient(circle at 15% 0%, rgba(198, 96, 63, 0.16), transparent 38%),
-    radial-gradient(circle at 100% 100%, rgba(20, 20, 20, 0.06), transparent 40%),
-    linear-gradient(155deg, rgba(255, 255, 255, 0.48), rgba(250, 249, 245, 0.08));
-}
-
-.app-noise {
-  position: relative;
-}
-
-.app-noise::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background-image: radial-gradient(rgba(20, 20, 20, 0.06) 0.6px, transparent 0.6px);
-  background-size: 3px 3px;
-  opacity: 0.3;
 }
 
 .display-heading {
