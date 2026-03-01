@@ -78,11 +78,51 @@ body {
 }
 
 .message-prose pre {
-  @apply mt-2 overflow-auto rounded-md border border-border/20 bg-input px-3 py-2 text-xs text-foreground;
+  @apply mt-2 overflow-auto rounded-md border border-border bg-input px-3 py-2;
 }
 
-.message-prose code {
+.message-prose pre code {
+  @apply block bg-transparent p-0 font-mono text-[0.86rem] leading-6 text-foreground;
+}
+
+.message-prose :not(pre) > code {
   @apply rounded bg-foreground/10 px-1.5 py-0.5 font-mono text-[0.8em];
+}
+
+.message-prose .hljs {
+  @apply bg-input text-foreground;
+}
+
+.message-prose .hljs-comment,
+.message-prose .hljs-quote {
+  color: rgba(20, 20, 20, 0.6);
+  font-style: italic;
+}
+
+.message-prose .hljs-keyword,
+.message-prose .hljs-selector-tag,
+.message-prose .hljs-literal,
+.message-prose .hljs-type,
+.message-prose .hljs-operator {
+  color: rgb(var(--primary));
+  font-weight: 600;
+}
+
+.message-prose .hljs-string,
+.message-prose .hljs-title,
+.message-prose .hljs-section,
+.message-prose .hljs-name,
+.message-prose .hljs-attribute {
+  color: rgba(20, 20, 20, 0.92);
+}
+
+.message-prose .hljs-number,
+.message-prose .hljs-symbol,
+.message-prose .hljs-meta,
+.message-prose .hljs-selector-id,
+.message-prose .hljs-selector-class,
+.message-prose .hljs-variable {
+  color: rgba(198, 96, 63, 0.9);
 }
 
 .message-prose {
