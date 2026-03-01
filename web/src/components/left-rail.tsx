@@ -1,6 +1,6 @@
 import { useNavigate } from "@tanstack/react-router";
 import { CirclePlus, Search, Settings2 } from "lucide-react";
-import { useMemo } from "react";
+import { useMemo, useRef } from "react";
 
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useAppStore } from "@/context/app-store";
@@ -10,19 +10,36 @@ type LeftRailProps = {
   onNavigate?: () => void;
 };
 
+const MAX_SESSION_TITLE = 26;
+
+function trimSessionTitle(title: string): string {
+  const normalized = title.trim();
+  if (normalized.length <= MAX_SESSION_TITLE) {
+    return normalized;
+  }
+  return `${normalized.slice(0, MAX_SESSION_TITLE - 3)}...`;
+}
+
 export function LeftRail({ onNavigate }: LeftRailProps) {
   const navigate = useNavigate();
   const { state, createThread, switchThread } = useAppStore();
+  const threadOrderRef = useRef<Map<string, number>>(new Map());
+  const nextOrderRef = useRef(0);
 
-  const sortedThreads = useMemo(
-    () =>
-      [...state.threads].sort(
-        (left, right) => new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime(),
-      ),
-    [state.threads],
-  );
+  const sessions = useMemo(() => {
+    for (const thread of state.threads) {
+      if (!threadOrderRef.current.has(thread.id)) {
+        threadOrderRef.current.set(thread.id, nextOrderRef.current);
+        nextOrderRef.current += 1;
+      }
+    }
 
-  const sessions = useMemo(() => sortedThreads, [sortedThreads]);
+    return [...state.threads].sort((left, right) => {
+      const leftOrder = threadOrderRef.current.get(left.id) ?? Number.MAX_SAFE_INTEGER;
+      const rightOrder = threadOrderRef.current.get(right.id) ?? Number.MAX_SAFE_INTEGER;
+      return leftOrder - rightOrder;
+    });
+  }, [state.threads]);
 
   return (
     <div className="flex h-full flex-col bg-background px-3 py-3 text-foreground">
@@ -53,8 +70,8 @@ export function LeftRail({ onNavigate }: LeftRailProps) {
             </button>
           </div>
 
-          <section className="space-y-1">
-            <p className="px-2 text-[0.75rem]" style={{ color: "#8b8a84" }}>
+          <section className="space-y-1 overflow-hidden">
+            <p className="px-2 text-[0.75rem] text-muted-foreground">
               Sessions
             </p>
             {sessions.length === 0 && (
@@ -72,14 +89,16 @@ export function LeftRail({ onNavigate }: LeftRailProps) {
                     navigate({ to: "/" });
                   }}
                   className={cn(
-                    "flex w-full items-center justify-between gap-2 rounded-sm px-2 py-2 text-left text-sm transition-colors",
+                    "flex w-full min-w-0 items-center gap-2 overflow-hidden rounded-sm px-2 py-2 text-left text-sm transition-colors",
                     "hover:bg-foreground/5",
                     active ? "bg-foreground/10 text-foreground" : "text-foreground/90",
                   )}
                   disabled={state.isWaiting}
                   title={thread.display_name}
                 >
-                  <span className="line-clamp-1">{thread.display_name}</span>
+                  <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap">
+                    {trimSessionTitle(thread.display_name)}
+                  </span>
                 </button>
               );
             })}
