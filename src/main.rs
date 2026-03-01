@@ -11,7 +11,6 @@ mod skills;
 mod tools;
 
 use anyhow::Result;
-use std::path::PathBuf;
 use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
 
@@ -30,18 +29,7 @@ async fn main() -> Result<()> {
     );
 
     // Resolve workspace dir
-    let workspace_dir = config
-        .workspace_dir
-        .as_deref()
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var("HOME")
-                .ok()
-                .map(|h| PathBuf::from(h).join(".rika").join("workspace"))
-        })
-        .ok_or_else(|| {
-            anyhow::anyhow!("workspace_dir could not be resolved from config or HOME")
-        })?;
+    let workspace_dir = config.resolve_workspace_dir()?;
 
     // Create provider
     let provider: Box<dyn providers::Provider> = providers::create_provider(&config)?;

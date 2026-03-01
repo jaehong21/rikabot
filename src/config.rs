@@ -456,6 +456,17 @@ impl AppConfig {
         let config_path = Self::resolve_path(path)?;
         Self::load_from_path(&config_path)
     }
+
+    pub fn resolve_workspace_dir(&self) -> Result<PathBuf> {
+        if let Some(raw) = self.workspace_dir.as_deref() {
+            return resolve_path_str(raw);
+        }
+
+        let home = resolve_home_dir().ok_or_else(|| {
+            anyhow::anyhow!("workspace_dir could not be resolved from config or HOME")
+        })?;
+        Ok(home.join(".rika").join("workspace"))
+    }
 }
 
 fn resolve_path_str(raw: &str) -> Result<PathBuf> {
@@ -557,6 +568,35 @@ mod tests {
         let cfg = McpConfig::default();
         assert!(cfg.enabled);
         assert!(cfg.servers.is_empty());
+    }
+
+    #[test]
+    fn resolve_path_str_expands_tilde_prefix() {
+        let Some(home) = resolve_home_dir() else {
+            return;
+        };
+        let path = resolve_path_str("~/test/path").expect("resolve path");
+        assert_eq!(path, home.join("test").join("path"));
+    }
+
+    #[test]
+    fn workspace_dir_expands_tilde() {
+        let Some(home) = resolve_home_dir() else {
+            return;
+        };
+
+        let cfg: AppConfig = toml::from_str(
+            r#"
+provider = "openai"
+workspace_dir = "~/.rika/workspace"
+[providers.openai]
+api_key = "x"
+"#,
+        )
+        .expect("parse config");
+
+        let workspace = cfg.resolve_workspace_dir().expect("resolve workspace");
+        assert_eq!(workspace, home.join(".rika").join("workspace"));
     }
 
     #[test]
