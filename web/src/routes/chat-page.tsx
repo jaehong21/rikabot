@@ -86,6 +86,7 @@ export function ChatPage() {
     state.isWaiting &&
     state.connectionState === "connected" &&
     !state.killRequested;
+  const isEmpty = state.entries.length === 0;
 
   useEffect(() => {
     const container = transcriptRef.current;
@@ -193,12 +194,6 @@ export function ChatPage() {
           className="scroll-soft h-full overflow-y-auto px-4 pb-44 pt-4 md:px-6"
         >
           <div className="mx-auto w-full max-w-[760px] space-y-6">
-            {state.entries.length === 0 && (
-              <p className="pt-2 text-sm text-muted-foreground">
-                Start a conversation.
-              </p>
-            )}
-
             {groupedEntries.map((item) => {
               if (item.kind === "message") {
                 const entry = item.entry;
@@ -411,8 +406,20 @@ export function ChatPage() {
         </div>
       </ScrollArea>
 
-      <footer className="pointer-events-none absolute inset-x-0 bottom-0 px-4 pb-6 md:px-6">
+      <footer
+        className={cn(
+          "absolute inset-x-0 px-4 md:px-6",
+          isEmpty
+            ? "inset-y-0 flex items-center justify-center"
+            : "pointer-events-none bottom-0 pb-6",
+        )}
+      >
         <div className="pointer-events-auto mx-auto w-full max-w-[760px]">
+          {isEmpty && (
+            <h1 className="mb-8 text-center text-4xl font-semibold leading-tight md:text-5xl">
+              👾 Welcome to Rika
+            </h1>
+          )}
           <div className="rounded-[1.5rem] border border-border/70 bg-input/70 px-4 py-3 transition-all duration-150 hover:border-border hover:bg-input hover:shadow-[0_8px_18px_rgba(20,20,20,0.06)] focus-within:border-border focus-within:bg-input focus-within:shadow-[0_8px_18px_rgba(20,20,20,0.08)]">
             <Textarea
               ref={textareaRef}
@@ -423,7 +430,7 @@ export function ChatPage() {
               }}
               rows={1}
               className="max-h-[180px] min-h-[36px] resize-none border-0 bg-transparent px-1 py-2 text-sm shadow-none focus-visible:ring-0"
-              placeholder="Reply..."
+              placeholder={isEmpty ? "How can I help you today?" : "Reply..."}
               onKeyDown={(event) => {
                 if (event.key === "Enter" && !event.shiftKey) {
                   event.preventDefault();
