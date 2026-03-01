@@ -71,12 +71,26 @@ export function ChatPage() {
   const canKill = state.isWaiting && state.connectionState === "connected" && !state.killRequested;
 
   useEffect(() => {
-    const node = transcriptRef.current;
-    if (!node) {
+    const container = transcriptRef.current;
+    if (!container) {
       return;
     }
-    node.scrollTop = node.scrollHeight;
-  }, [state.entries, state.isWaiting]);
+
+    const viewport = container.closest("[data-radix-scroll-area-viewport]");
+    const scrollNode = viewport instanceof HTMLElement ? viewport : container;
+
+    const frame = requestAnimationFrame(() => {
+      scrollNode.scrollTo({ top: scrollNode.scrollHeight, behavior: "smooth" });
+    });
+    const settle = window.setTimeout(() => {
+      scrollNode.scrollTop = scrollNode.scrollHeight;
+    }, 220);
+
+    return () => {
+      cancelAnimationFrame(frame);
+      window.clearTimeout(settle);
+    };
+  }, [state.entries, state.isWaiting, state.currentSessionId]);
 
   useEffect(() => {
     const handleSlashFocus = (event: KeyboardEvent): void => {
