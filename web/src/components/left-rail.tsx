@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils";
 
 type LeftRailProps = {
   onNavigate?: () => void;
+  onOpenCommandPalette?: () => void;
 };
 
 const MAX_SESSION_TITLE = 26;
@@ -20,7 +21,7 @@ function trimSessionTitle(title: string): string {
   return `${normalized.slice(0, MAX_SESSION_TITLE - 3)}...`;
 }
 
-export function LeftRail({ onNavigate }: LeftRailProps) {
+export function LeftRail({ onNavigate, onOpenCommandPalette }: LeftRailProps) {
   const navigate = useNavigate();
   const { state, createThread, switchThread } = useAppStore();
   const threadOrderRef = useRef<Map<string, number>>(new Map());
@@ -64,6 +65,10 @@ export function LeftRail({ onNavigate }: LeftRailProps) {
             <button
               type="button"
               className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm text-foreground/90 transition-colors hover:bg-foreground/5 hover:text-foreground"
+              onClick={() => {
+                onNavigate?.();
+                onOpenCommandPalette?.();
+              }}
             >
               <Search className="h-4 w-4 shrink-0" />
               <span className="truncate">Search</span>

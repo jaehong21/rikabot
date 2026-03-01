@@ -1,7 +1,8 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Outlet, useRouterState } from '@tanstack/react-router';
 import { ChevronDown, Menu } from 'lucide-react';
 
+import { CommandPalette } from '@/components/command-palette';
 import { LeftRail } from '@/components/left-rail';
 import { useAppStore } from '@/context/app-store';
 import { Badge } from '@/components/ui/badge';
@@ -25,6 +26,7 @@ export function AppShell() {
   const { state } = useAppStore();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const isChatRoute = pathname === '/';
 
   const activeThread = useMemo(
@@ -39,6 +41,20 @@ export function AppShell() {
         ? 'Threads'
         : activeThread?.display_name || 'Rika Assistant';
 
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        setCommandPaletteOpen((prev) => !prev);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, []);
+
   return (
     <div className={cn('h-screen w-screen overflow-hidden', !isChatRoute && 'app-noise')}>
       <div
@@ -48,7 +64,7 @@ export function AppShell() {
         )}
       >
         <aside className="hidden border-r border-border/70 md:block">
-          <LeftRail />
+          <LeftRail onOpenCommandPalette={() => setCommandPaletteOpen(true)} />
         </aside>
 
         <div className="grid min-h-0 grid-rows-[auto_1fr]">
@@ -70,7 +86,10 @@ export function AppShell() {
                     <SheetTitle className="display-heading text-xl">Rika</SheetTitle>
                   </SheetHeader>
                   <div className="h-[calc(100vh-68px)]">
-                    <LeftRail onNavigate={() => setMobileOpen(false)} />
+                    <LeftRail
+                      onNavigate={() => setMobileOpen(false)}
+                      onOpenCommandPalette={() => setCommandPaletteOpen(true)}
+                    />
                   </div>
                 </SheetContent>
               </Sheet>
@@ -121,6 +140,8 @@ export function AppShell() {
             </div>
           </div>
         )}
+
+        <CommandPalette open={commandPaletteOpen} onOpenChange={setCommandPaletteOpen} />
       </div>
     </div>
   );

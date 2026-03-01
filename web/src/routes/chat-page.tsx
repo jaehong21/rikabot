@@ -10,6 +10,23 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+
+  const tagName = target.tagName.toLowerCase();
+  if (tagName === "input" || tagName === "textarea" || tagName === "select") {
+    return true;
+  }
+
+  if (target.isContentEditable) {
+    return true;
+  }
+
+  return target.closest('[contenteditable="true"]') !== null;
+}
+
 function toolStatusText(status: ToolEntry["status"]): string {
   if (status === "running") return "Running";
   if (status === "success") return "Success";
@@ -60,6 +77,29 @@ export function ChatPage() {
     }
     node.scrollTop = node.scrollHeight;
   }, [state.entries, state.isWaiting]);
+
+  useEffect(() => {
+    const handleSlashFocus = (event: KeyboardEvent): void => {
+      if (
+        event.defaultPrevented ||
+        event.key !== "/" ||
+        event.metaKey ||
+        event.ctrlKey ||
+        event.altKey ||
+        isEditableTarget(event.target)
+      ) {
+        return;
+      }
+
+      event.preventDefault();
+      textareaRef.current?.focus();
+    };
+
+    window.addEventListener("keydown", handleSlashFocus);
+    return () => {
+      window.removeEventListener("keydown", handleSlashFocus);
+    };
+  }, []);
 
   const submit = (): void => {
     if (!canSend) {

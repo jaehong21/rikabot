@@ -56,6 +56,7 @@ type AppState = {
 type AppStore = {
   state: AppState;
   sendMessage: (text: string) => void;
+  runSlashCommand: (raw: string) => boolean;
   requestKillSwitch: () => void;
   switchThread: (sessionId: string) => void;
   createThread: (displayName?: string) => void;
@@ -1154,7 +1155,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
     setState((prev) => ({ ...prev, permissionsEnabled: value }));
   }, []);
 
-  const handleSlashCommand = useCallback(
+  const runSlashCommand = useCallback(
     (raw: string): boolean => {
       if (!raw.startsWith('/')) {
         return false;
@@ -1268,7 +1269,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      if (handleSlashCommand(text)) {
+      if (runSlashCommand(text)) {
         resetActiveResponseState();
         return;
       }
@@ -1280,13 +1281,14 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         }),
       );
     },
-    [handleSlashCommand, resetActiveResponseState],
+    [resetActiveResponseState, runSlashCommand],
   );
 
   const value = useMemo<AppStore>(
     () => ({
       state,
       sendMessage,
+      runSlashCommand,
       requestKillSwitch,
       switchThread,
       createThread,
@@ -1312,6 +1314,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       refreshThreads,
       renameThread,
       requestKillSwitch,
+      runSlashCommand,
       savePermissions,
       sendMessage,
       setShowToolCalls,
