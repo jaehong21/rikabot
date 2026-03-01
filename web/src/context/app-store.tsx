@@ -1293,22 +1293,18 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         const mode = arg.toLowerCase();
         if (mode === "collapse") {
           setToolOutputsExpanded(false);
-          pushAssistantNote("Collapsed all tool outputs.");
           return true;
         }
         if (mode === "expand") {
           setToolOutputsExpanded(true);
-          pushAssistantNote("Expanded all tool outputs.");
           return true;
         }
         if (mode === "hide") {
           setShowToolCalls(false);
-          pushAssistantNote("Tool call blocks are now hidden.");
           return true;
         }
         if (mode === "show") {
           setShowToolCalls(true);
-          pushAssistantNote("Tool call blocks are now visible.");
           return true;
         }
         onError("Usage: /tools <collapse|expand|hide|show>");
