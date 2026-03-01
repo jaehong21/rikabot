@@ -1,7 +1,7 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AppConfig {
@@ -426,12 +426,23 @@ impl OpenRouterConfig {
 }
 
 impl AppConfig {
-    pub fn load(path: Option<&str>) -> Result<Self> {
-        let config_path = path
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("config.toml"));
+    pub fn resolve_path(path: Option<&str>) -> Result<PathBuf> {
+        if let Some(raw) = path {
+            return resolve_path_str(raw);
+        }
 
-        let contents = std::fs::read_to_string(&config_path)
+        if let Ok(raw) = std::env::var("RIKA_CONFIG") {
+            return resolve_path_str(&raw);
+        }
+
+        let home = resolve_home_dir().ok_or_else(|| {
+            anyhow::anyhow!("could not resolve home directory for default config path")
+        })?;
+        Ok(home.join(".rika").join("config.toml"))
+    }
+
+    pub fn load_from_path(config_path: &Path) -> Result<Self> {
+        let contents = std::fs::read_to_string(config_path)
             .map_err(|e| anyhow::anyhow!("Failed to read config file {:?}: {}", config_path, e))?;
 
         let config: AppConfig = toml::from_str(&contents)
@@ -440,6 +451,43 @@ impl AppConfig {
 
         Ok(config)
     }
+
+    pub fn load(path: Option<&str>) -> Result<Self> {
+        let config_path = Self::resolve_path(path)?;
+        Self::load_from_path(&config_path)
+    }
+}
+
+fn resolve_path_str(raw: &str) -> Result<PathBuf> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("config path cannot be empty");
+    }
+
+    if trimmed == "~" {
+        let home = resolve_home_dir()
+            .ok_or_else(|| anyhow::anyhow!("could not resolve home directory for config path"))?;
+        return Ok(home);
+    }
+
+    if let Some(rest) = trimmed.strip_prefix("~/") {
+        let home = resolve_home_dir()
+            .ok_or_else(|| anyhow::anyhow!("could not resolve home directory for config path"))?;
+        return Ok(home.join(rest));
+    }
+
+    Ok(PathBuf::from(trimmed))
+}
+
+fn resolve_home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
+        .or_else(|| {
+            let drive = std::env::var_os("HOMEDRIVE")?;
+            let path = std::env::var_os("HOMEPATH")?;
+            Some(PathBuf::from(drive).join(path))
+        })
 }
 
 #[cfg(test)]

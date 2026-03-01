@@ -22,6 +22,7 @@ async fn main() -> Result<()> {
         .init();
 
     let config = config::AppConfig::load(None)?;
+    let config_path = config::AppConfig::resolve_path(None)?;
     tracing::info!(
         "Loaded config: provider={}, model={}",
         config.provider,
@@ -87,7 +88,7 @@ async fn main() -> Result<()> {
         &workspace_dir,
     )?));
 
-    let config_store = Arc::new(config_store::ConfigStore::new(PathBuf::from("config.toml")));
+    let config_store = Arc::new(config_store::ConfigStore::new(config_path));
 
     // Start gateway
     tracing::info!("Starting server on http://{}:{}", config.host, config.port);

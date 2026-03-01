@@ -1,6 +1,9 @@
 # -----------------------------------------------------------------------------
 # Rikabot config template
 # Most settings below show defaults as comments. Uncomment to override.
+# Runtime config file resolution:
+# 1) RIKA_CONFIG (if set)
+# 2) ~/.rika/config.toml (default)
 # -----------------------------------------------------------------------------
 
 # host = "127.0.0.1"
