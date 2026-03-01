@@ -9,8 +9,6 @@ pub struct AppConfig {
     pub host: String,
     #[serde(default = "default_port")]
     pub port: u16,
-    #[serde(default = "default_system_prompt")]
-    pub system_prompt: String,
     #[serde(default = "default_model")]
     pub model: String,
     #[serde(default = "default_temperature")]
@@ -242,9 +240,6 @@ fn default_host() -> String {
 }
 fn default_port() -> u16 {
     4728
-}
-fn default_system_prompt() -> String {
-    "You are Rika, a helpful personal AI assistant. You can execute shell commands using the shell tool when needed.".to_string()
 }
 fn default_model() -> String {
     "openai/gpt-5.2".to_string()

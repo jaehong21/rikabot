@@ -950,7 +950,6 @@ mod tests {
         let prompt_manager = Arc::new(
             PromptManager::new(
                 workspace,
-                "system".to_string(),
                 false,
                 PromptLimits {
                     bootstrap_max_chars: 20_000,

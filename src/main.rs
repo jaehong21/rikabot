@@ -55,7 +55,6 @@ async fn main() -> Result<()> {
 
     let prompt_manager = Arc::new(prompt::PromptManager::new(
         &workspace_dir,
-        config.system_prompt.clone(),
         config.skills.enabled,
         prompt::PromptLimits {
             bootstrap_max_chars: config.prompt.bootstrap_max_chars,

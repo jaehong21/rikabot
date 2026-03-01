@@ -35,18 +35,12 @@ pub struct PromptLimits {
 
 pub struct PromptManager {
     workspace_dir: PathBuf,
-    base_system_prompt: String,
     skills_enabled: bool,
     limits: PromptLimits,
 }
 
 impl PromptManager {
-    pub fn new(
-        workspace_dir: &Path,
-        base_system_prompt: String,
-        skills_enabled: bool,
-        limits: PromptLimits,
-    ) -> Result<Self> {
+    pub fn new(workspace_dir: &Path, skills_enabled: bool, limits: PromptLimits) -> Result<Self> {
         fs::create_dir_all(workspace_dir).with_context(|| {
             format!("failed to create workspace dir {}", workspace_dir.display())
         })?;
@@ -57,7 +51,6 @@ impl PromptManager {
 
         let manager = Self {
             workspace_dir,
-            base_system_prompt,
             skills_enabled,
             limits: PromptLimits {
                 bootstrap_max_chars: sanitize_limit(
@@ -76,7 +69,7 @@ impl PromptManager {
     }
 
     pub fn build_prompt(&self) -> Result<String> {
-        let mut sections = vec![self.base_system_prompt.clone()];
+        let mut sections: Vec<String> = Vec::new();
 
         if self.skills_enabled {
             let skills_loader = SkillsLoader::new(Some(self.workspace_dir.join("skills")));
@@ -225,7 +218,6 @@ mod tests {
     fn manager(workspace: &Path, max: usize, total: usize) -> PromptManager {
         PromptManager::new(
             workspace,
-            "base prompt".to_string(),
             false,
             PromptLimits {
                 bootstrap_max_chars: max,
