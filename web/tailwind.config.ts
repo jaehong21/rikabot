@@ -5,6 +5,9 @@ const config: Config = {
   content: ['./index.html', './src/**/*.{ts,tsx}'],
   theme: {
     extend: {
+      borderWidth: {
+        DEFAULT: '0.5px',
+      },
       colors: {
         border: 'rgb(var(--border) / <alpha-value>)',
         input: 'rgb(var(--input) / <alpha-value>)',

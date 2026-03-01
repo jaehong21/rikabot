@@ -20,7 +20,7 @@ run = "cargo build"
 run = "watchexec --restart --exts rs -- cargo run"
 [tasks."dev:fe"]
 dir = "{{cwd}}/web"
-run = "watchexec --restart --exts html,css,ts,svelte -- bun run build"
+run = "watchexec --restart --exts html,css,ts,tsx -- bun run build"
 
 [tasks."test:be"]
 run = "cargo test"
