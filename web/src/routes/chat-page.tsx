@@ -62,13 +62,20 @@ export function ChatPage() {
   } = useAppStore();
 
   const [draft, setDraft] = useState("");
-  const [openToolGroups, setOpenToolGroups] = useState<Record<string, boolean>>({});
+  const [openToolGroups, setOpenToolGroups] = useState<Record<string, boolean>>(
+    {},
+  );
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   const canSend =
-    !state.isWaiting && state.connectionState === "connected" && draft.trim().length > 0;
-  const canKill = state.isWaiting && state.connectionState === "connected" && !state.killRequested;
+    !state.isWaiting &&
+    state.connectionState === "connected" &&
+    draft.trim().length > 0;
+  const canKill =
+    state.isWaiting &&
+    state.connectionState === "connected" &&
+    !state.killRequested;
 
   useEffect(() => {
     const container = transcriptRef.current;
@@ -150,12 +157,19 @@ export function ChatPage() {
       }
 
       const toolEntries: ToolEntry[] = [entry];
-      while (index + 1 < state.entries.length && state.entries[index + 1].kind === "tool") {
+      while (
+        index + 1 < state.entries.length &&
+        state.entries[index + 1].kind === "tool"
+      ) {
         toolEntries.push(state.entries[index + 1] as ToolEntry);
         index += 1;
       }
 
-      groups.push({ kind: "tool-group", id: toolEntries[0].id, entries: toolEntries });
+      groups.push({
+        kind: "tool-group",
+        id: toolEntries[0].id,
+        entries: toolEntries,
+      });
     }
 
     return groups;
@@ -170,7 +184,9 @@ export function ChatPage() {
         >
           <div className="mx-auto w-full max-w-[760px] space-y-6">
             {state.entries.length === 0 && (
-              <p className="pt-2 text-sm text-muted-foreground">Start a conversation.</p>
+              <p className="pt-2 text-sm text-muted-foreground">
+                Start a conversation.
+              </p>
             )}
 
             {groupedEntries.map((item) => {
@@ -187,7 +203,9 @@ export function ChatPage() {
                       >
                         <div
                           className="message-prose text-sm leading-5 [&_br]:leading-4"
-                          dangerouslySetInnerHTML={{ __html: renderMarkdown(entry.text) }}
+                          dangerouslySetInnerHTML={{
+                            __html: renderMarkdown(entry.text),
+                          }}
                         />
                       </article>
                     </div>
@@ -202,7 +220,11 @@ export function ChatPage() {
                       entry.error && "text-primary",
                     )}
                   >
-                    <div dangerouslySetInnerHTML={{ __html: renderMarkdown(entry.text) }} />
+                    <div
+                      dangerouslySetInnerHTML={{
+                        __html: renderMarkdown(entry.text),
+                      }}
+                    />
                   </article>
                 );
               }
@@ -249,7 +271,9 @@ export function ChatPage() {
                             className="flex w-full items-center justify-between gap-3 text-left"
                           >
                             <div className="min-w-0">
-                              <p className="truncate text-sm text-foreground">{entry.name}</p>
+                              <p className="truncate text-sm text-foreground">
+                                {entry.name}
+                              </p>
                               {!entry.open && (
                                 <p className="mt-1 line-clamp-1 text-xs text-muted-foreground">
                                   {entry.argsPreview || "No input"}
@@ -273,7 +297,9 @@ export function ChatPage() {
                                   Input
                                 </p>
                                 <pre className="mt-1 overflow-x-auto rounded-lg border border-border/60 bg-input px-3 py-2 text-xs text-foreground">
-                                  {entry.args || entry.argsPreview || "No input"}
+                                  {entry.args ||
+                                    entry.argsPreview ||
+                                    "No input"}
                                 </pre>
                               </div>
 
@@ -288,16 +314,21 @@ export function ChatPage() {
 
                               {entry.awaitingApproval && entry.approval && (
                                 <section className="rounded-lg border border-border bg-input p-3">
-                                  <p className="text-sm font-semibold">Approval required</p>
+                                  <p className="text-sm font-semibold">
+                                    Approval required
+                                  </p>
                                   <p className="mt-1 text-xs text-muted-foreground">
-                                    This tool call was blocked by permissions. Persist a rule, allow
-                                    once, or deny.
+                                    This tool call was blocked by permissions.
+                                    Persist a rule, allow once, or deny.
                                   </p>
                                   <Input
                                     value={entry.approval.allowRuleInput}
                                     disabled={entry.approval.submitting}
                                     onChange={(event) =>
-                                      updateApprovalRule(entry.id, event.currentTarget.value)
+                                      updateApprovalRule(
+                                        entry.id,
+                                        event.currentTarget.value,
+                                      )
                                     }
                                     placeholder="shell(command:git status *)"
                                     className="mt-3"
@@ -305,7 +336,12 @@ export function ChatPage() {
                                   <div className="mt-3 flex flex-wrap gap-2">
                                     <Button
                                       size="sm"
-                                      onClick={() => submitToolApproval(entry.id, "allow_persist")}
+                                      onClick={() =>
+                                        submitToolApproval(
+                                          entry.id,
+                                          "allow_persist",
+                                        )
+                                      }
                                       disabled={entry.approval.submitting}
                                       className="rounded-[0.55rem] bg-foreground text-input hover:bg-foreground/90"
                                     >
@@ -314,7 +350,12 @@ export function ChatPage() {
                                     <Button
                                       size="sm"
                                       variant="outline"
-                                      onClick={() => submitToolApproval(entry.id, "allow_once")}
+                                      onClick={() =>
+                                        submitToolApproval(
+                                          entry.id,
+                                          "allow_once",
+                                        )
+                                      }
                                       disabled={entry.approval.submitting}
                                       className="rounded-[0.55rem] border-border bg-transparent text-foreground hover:bg-background"
                                     >
@@ -323,7 +364,9 @@ export function ChatPage() {
                                     <Button
                                       size="sm"
                                       variant="outline"
-                                      onClick={() => submitToolApproval(entry.id, "deny")}
+                                      onClick={() =>
+                                        submitToolApproval(entry.id, "deny")
+                                      }
                                       disabled={entry.approval.submitting}
                                       className="rounded-[0.55rem] border-border bg-transparent text-foreground hover:bg-background"
                                     >

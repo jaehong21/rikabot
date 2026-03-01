@@ -1,7 +1,7 @@
-import { clsx, type ClassValue } from 'clsx';
-import { twMerge } from 'tailwind-merge';
+import { clsx, type ClassValue } from "clsx";
+import { twMerge } from "tailwind-merge";
 
-import type { ThreadRecord } from '@/types/app';
+import type { ThreadRecord } from "@/types/app";
 
 export function cn(...inputs: ClassValue[]): string {
   return twMerge(clsx(inputs));
@@ -25,9 +25,9 @@ export function groupThreads(threads: ThreadRecord[]): ThreadGroup[] {
   const yesterday = dateKey(yesterdayDate.toISOString());
 
   const groups: ThreadGroup[] = [
-    { label: 'Today', threads: [] },
-    { label: 'Yesterday', threads: [] },
-    { label: 'Earlier', threads: [] },
+    { label: "Today", threads: [] },
+    { label: "Yesterday", threads: [] },
+    { label: "Earlier", threads: [] },
   ];
 
   for (const thread of threads) {
@@ -49,7 +49,7 @@ export function groupThreads(threads: ThreadRecord[]): ThreadGroup[] {
 export function formatTime(value: number): string {
   const date = new Date(value);
   return date.toLocaleTimeString([], {
-    hour: '2-digit',
-    minute: '2-digit',
+    hour: "2-digit",
+    minute: "2-digit",
   });
 }

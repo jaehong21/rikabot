@@ -36,8 +36,10 @@ export function LeftRail({ onNavigate, onOpenCommandPalette }: LeftRailProps) {
     }
 
     return [...state.threads].sort((left, right) => {
-      const leftOrder = threadOrderRef.current.get(left.id) ?? Number.MAX_SAFE_INTEGER;
-      const rightOrder = threadOrderRef.current.get(right.id) ?? Number.MAX_SAFE_INTEGER;
+      const leftOrder =
+        threadOrderRef.current.get(left.id) ?? Number.MAX_SAFE_INTEGER;
+      const rightOrder =
+        threadOrderRef.current.get(right.id) ?? Number.MAX_SAFE_INTEGER;
       return leftOrder - rightOrder;
     });
   }, [state.threads]);
@@ -80,7 +82,9 @@ export function LeftRail({ onNavigate, onOpenCommandPalette }: LeftRailProps) {
               Sessions
             </p>
             {sessions.length === 0 && (
-              <p className="px-2 py-1 text-sm text-muted-foreground">No sessions</p>
+              <p className="px-2 py-1 text-sm text-muted-foreground">
+                No sessions
+              </p>
             )}
             {sessions.map((thread) => {
               const active = thread.id === state.currentSessionId;
@@ -96,7 +100,9 @@ export function LeftRail({ onNavigate, onOpenCommandPalette }: LeftRailProps) {
                   className={cn(
                     "flex w-full min-w-0 items-center gap-2 overflow-hidden rounded-sm px-2 py-2 text-left text-sm transition-colors",
                     "hover:bg-foreground/5",
-                    active ? "bg-foreground/10 text-foreground" : "text-foreground/90",
+                    active
+                      ? "bg-foreground/10 text-foreground"
+                      : "text-foreground/90",
                   )}
                   disabled={state.isWaiting}
                   title={thread.display_name}

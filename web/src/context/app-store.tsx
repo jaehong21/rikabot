@@ -7,7 +7,7 @@ import {
   useRef,
   useState,
   type ReactNode,
-} from 'react';
+} from "react";
 
 import type {
   DoneEvent,
@@ -27,16 +27,16 @@ import type {
   ToolCallResultEvent,
   ToolEntry,
   ToolStatus,
-} from '@/types/app';
+} from "@/types/app";
 
-const TOOL_PREFS_STORAGE_KEY = 'rika.toolOutputsExpanded';
-const TOOL_VISIBILITY_STORAGE_KEY = 'rika.showToolCalls';
+const TOOL_PREFS_STORAGE_KEY = "rika.toolOutputsExpanded";
+const TOOL_VISIBILITY_STORAGE_KEY = "rika.showToolCalls";
 
 type AppState = {
   entries: Entry[];
   threads: ThreadRecord[];
   currentSessionId: string | null;
-  connectionState: 'connecting' | 'connected' | 'disconnected';
+  connectionState: "connecting" | "connected" | "disconnected";
   isWaiting: boolean;
   killRequested: boolean;
   showReconnectOverlay: boolean;
@@ -69,7 +69,7 @@ type AppStore = {
   updateApprovalRule: (entryId: string, value: string) => void;
   submitToolApproval: (entryId: string, decision: ToolApprovalDecision) => void;
   savePermissions: () => void;
-  updatePermissionsField: (field: 'allow' | 'deny', value: string) => void;
+  updatePermissionsField: (field: "allow" | "deny", value: string) => void;
   updatePermissionsEnabled: (value: boolean) => void;
   refreshPermissions: () => void;
   refreshThreads: () => void;
@@ -79,7 +79,7 @@ const DEFAULT_STATE: AppState = {
   entries: [],
   threads: [],
   currentSessionId: null,
-  connectionState: 'connecting',
+  connectionState: "connecting",
   isWaiting: false,
   killRequested: false,
   showReconnectOverlay: false,
@@ -88,8 +88,8 @@ const DEFAULT_STATE: AppState = {
   permissionsLoaded: false,
   permissionsSaving: false,
   permissionsEnabled: true,
-  permissionsAllowText: '',
-  permissionsDenyText: '',
+  permissionsAllowText: "",
+  permissionsDenyText: "",
   permissionsErrors: [],
   permissionsSavedAt: null,
   mcpEnabled: true,
@@ -101,8 +101,8 @@ const AppStoreContext = createContext<AppStore | null>(null);
 function readBooleanPreference(key: string, fallback: boolean): boolean {
   try {
     const raw = window.localStorage.getItem(key);
-    if (raw === 'true') return true;
-    if (raw === 'false') return false;
+    if (raw === "true") return true;
+    if (raw === "false") return false;
     return fallback;
   } catch {
     return fallback;
@@ -118,11 +118,11 @@ function writeBooleanPreference(key: string, value: boolean): void {
 }
 
 function formatArgs(args: unknown): string {
-  if (typeof args === 'object' && args !== null) {
+  if (typeof args === "object" && args !== null) {
     return JSON.stringify(args, null, 2);
   }
 
-  if (typeof args === 'string') {
+  if (typeof args === "string") {
     try {
       return JSON.stringify(JSON.parse(args), null, 2);
     } catch {
@@ -130,13 +130,13 @@ function formatArgs(args: unknown): string {
     }
   }
 
-  return String(args ?? '');
+  return String(args ?? "");
 }
 
 function makePreview(content: string): string {
-  const compact = content.replace(/\s+/g, ' ').trim();
+  const compact = content.replace(/\s+/g, " ").trim();
   if (!compact) {
-    return '(no arguments)';
+    return "(no arguments)";
   }
 
   if (compact.length <= 120) {
@@ -151,10 +151,20 @@ function normalizeUsage(usage?: Partial<TokenUsage>): TokenUsage | undefined {
     return undefined;
   }
 
-  const promptTokens = Math.max(0, Math.round(Number(usage.prompt_tokens ?? 0)));
-  const completionTokens = Math.max(0, Math.round(Number(usage.completion_tokens ?? 0)));
-  const providedTotal = Math.max(0, Math.round(Number(usage.total_tokens ?? 0)));
-  const totalTokens = providedTotal > 0 ? providedTotal : promptTokens + completionTokens;
+  const promptTokens = Math.max(
+    0,
+    Math.round(Number(usage.prompt_tokens ?? 0)),
+  );
+  const completionTokens = Math.max(
+    0,
+    Math.round(Number(usage.completion_tokens ?? 0)),
+  );
+  const providedTotal = Math.max(
+    0,
+    Math.round(Number(usage.total_tokens ?? 0)),
+  );
+  const totalTokens =
+    providedTotal > 0 ? providedTotal : promptTokens + completionTokens;
 
   if (promptTokens === 0 && completionTokens === 0 && totalTokens === 0) {
     return undefined;
@@ -167,19 +177,27 @@ function normalizeUsage(usage?: Partial<TokenUsage>): TokenUsage | undefined {
   };
 }
 
-function normalizeToolStatus(raw: unknown, successFallback = false): ToolStatus {
-  if (raw === 'running' || raw === 'success' || raw === 'failed' || raw === 'denied') {
+function normalizeToolStatus(
+  raw: unknown,
+  successFallback = false,
+): ToolStatus {
+  if (
+    raw === "running" ||
+    raw === "success" ||
+    raw === "failed" ||
+    raw === "denied"
+  ) {
     return raw;
   }
-  if (raw === 'failure') {
-    return 'failed';
+  if (raw === "failure") {
+    return "failed";
   }
-  return successFallback ? 'success' : 'failed';
+  return successFallback ? "success" : "failed";
 }
 
 function parseRulesInput(raw: string): string[] {
   return raw
-    .split('\n')
+    .split("\n")
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
 }
@@ -188,7 +206,7 @@ function findToolIndex(entries: Entry[], callId: string, name: string): number {
   if (callId.trim()) {
     for (let i = entries.length - 1; i >= 0; i -= 1) {
       const entry = entries[i];
-      if (entry.kind === 'tool' && entry.callId === callId) {
+      if (entry.kind === "tool" && entry.callId === callId) {
         return i;
       }
     }
@@ -196,7 +214,7 @@ function findToolIndex(entries: Entry[], callId: string, name: string): number {
 
   for (let i = entries.length - 1; i >= 0; i -= 1) {
     const entry = entries[i];
-    if (entry.kind === 'tool' && !entry.resolved && entry.name === name) {
+    if (entry.kind === "tool" && !entry.resolved && entry.name === name) {
       return i;
     }
   }
@@ -248,35 +266,47 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
     ws.send(JSON.stringify(payload));
   }, []);
 
-  const applyThreadState = useCallback((nextThreads?: ThreadRecord[], currentId?: string): void => {
-    setState((prev) => ({
-      ...prev,
-      threads: Array.isArray(nextThreads) ? [...nextThreads] : prev.threads,
-      currentSessionId: currentId ?? prev.currentSessionId,
-    }));
-  }, []);
+  const applyThreadState = useCallback(
+    (nextThreads?: ThreadRecord[], currentId?: string): void => {
+      setState((prev) => ({
+        ...prev,
+        threads: Array.isArray(nextThreads) ? [...nextThreads] : prev.threads,
+        currentSessionId: currentId ?? prev.currentSessionId,
+      }));
+    },
+    [],
+  );
 
-  const applyPermissionsState = useCallback((permissions?: PermissionsState, validationErrors: string[] = []): void => {
-    setState((prev) => ({
-      ...prev,
-      permissionsLoaded: true,
-      permissionsSaving: false,
-      permissionsEnabled: typeof permissions?.enabled === 'boolean' ? permissions.enabled : prev.permissionsEnabled,
-      permissionsAllowText: Array.isArray(permissions?.tools?.allow)
-        ? permissions.tools.allow.join('\n')
-        : prev.permissionsAllowText,
-      permissionsDenyText: Array.isArray(permissions?.tools?.deny)
-        ? permissions.tools.deny.join('\n')
-        : prev.permissionsDenyText,
-      permissionsErrors: validationErrors,
-    }));
-  }, []);
+  const applyPermissionsState = useCallback(
+    (permissions?: PermissionsState, validationErrors: string[] = []): void => {
+      setState((prev) => ({
+        ...prev,
+        permissionsLoaded: true,
+        permissionsSaving: false,
+        permissionsEnabled:
+          typeof permissions?.enabled === "boolean"
+            ? permissions.enabled
+            : prev.permissionsEnabled,
+        permissionsAllowText: Array.isArray(permissions?.tools?.allow)
+          ? permissions.tools.allow.join("\n")
+          : prev.permissionsAllowText,
+        permissionsDenyText: Array.isArray(permissions?.tools?.deny)
+          ? permissions.tools.deny.join("\n")
+          : prev.permissionsDenyText,
+        permissionsErrors: validationErrors,
+      }));
+    },
+    [],
+  );
 
   const applyMcpStatus = useCallback((status?: McpStatusSnapshot): void => {
     setState((prev) => ({
       ...prev,
-      mcpEnabled: typeof status?.enabled === 'boolean' ? status.enabled : prev.mcpEnabled,
-      mcpServers: Array.isArray(status?.servers) ? [...status.servers] : prev.mcpServers,
+      mcpEnabled:
+        typeof status?.enabled === "boolean" ? status.enabled : prev.mcpEnabled,
+      mcpServers: Array.isArray(status?.servers)
+        ? [...status.servers]
+        : prev.mcpServers,
     }));
   }, []);
 
@@ -286,21 +316,28 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       const toolCallIndex = new Map<string, number>();
 
       for (const msg of history) {
-        if (msg.role === 'user') {
+        if (msg.role === "user") {
           rebuilt.push({
             id: nextId(),
-            kind: 'message',
-            role: 'user',
+            kind: "message",
+            role: "user",
             text: msg.content,
           });
           continue;
         }
 
-        if (msg.role === 'assistant') {
+        if (msg.role === "assistant") {
           let parsed: { content?: unknown; tool_calls?: unknown } | null = null;
           try {
-            const raw = JSON.parse(msg.content) as { content?: unknown; tool_calls?: unknown };
-            if (raw && typeof raw === 'object' && Array.isArray(raw.tool_calls)) {
+            const raw = JSON.parse(msg.content) as {
+              content?: unknown;
+              tool_calls?: unknown;
+            };
+            if (
+              raw &&
+              typeof raw === "object" &&
+              Array.isArray(raw.tool_calls)
+            ) {
               parsed = raw;
             }
           } catch {
@@ -310,37 +347,44 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
           if (!parsed) {
             rebuilt.push({
               id: nextId(),
-              kind: 'message',
-              role: 'assistant',
+              kind: "message",
+              role: "assistant",
               text: msg.content,
             });
             continue;
           }
 
-          if (typeof parsed.content === 'string' && parsed.content.trim().length > 0) {
+          if (
+            typeof parsed.content === "string" &&
+            parsed.content.trim().length > 0
+          ) {
             rebuilt.push({
               id: nextId(),
-              kind: 'message',
-              role: 'assistant',
+              kind: "message",
+              role: "assistant",
               text: parsed.content,
             });
           }
 
           const toolCalls = parsed.tool_calls as Array<Record<string, unknown>>;
           for (const call of toolCalls) {
-            const callId = typeof call.id === 'string' && call.id.trim() ? call.id : nextId();
-            const name = typeof call.name === 'string' ? call.name : 'unknown_tool';
+            const callId =
+              typeof call.id === "string" && call.id.trim()
+                ? call.id
+                : nextId();
+            const name =
+              typeof call.name === "string" ? call.name : "unknown_tool";
             const formattedArgs = formatArgs(call.arguments ?? {});
 
             const entry: ToolEntry = {
               id: nextId(),
-              kind: 'tool',
+              kind: "tool",
               callId,
               name,
               args: formattedArgs,
               argsPreview: makePreview(formattedArgs),
-              output: '',
-              status: 'running',
+              output: "",
+              status: "running",
               awaitingApproval: false,
               resolved: false,
               open: toolOutputsExpanded,
@@ -353,10 +397,10 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
           continue;
         }
 
-        if (msg.role === 'tool') {
-          let callId = '';
+        if (msg.role === "tool") {
+          let callId = "";
           let output = msg.content;
-          let status: ToolStatus = 'success';
+          let status: ToolStatus = "success";
 
           try {
             const parsed = JSON.parse(msg.content) as {
@@ -364,10 +408,10 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
               content?: unknown;
               status?: unknown;
             };
-            if (typeof parsed.tool_call_id === 'string') {
+            if (typeof parsed.tool_call_id === "string") {
               callId = parsed.tool_call_id;
             }
-            if (typeof parsed.content === 'string') {
+            if (typeof parsed.content === "string") {
               output = parsed.content;
             }
             status = normalizeToolStatus(parsed.status, true);
@@ -378,7 +422,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
           const idx = callId ? toolCallIndex.get(callId) : undefined;
           if (idx !== undefined) {
             const current = rebuilt[idx];
-            if (current?.kind === 'tool') {
+            if (current?.kind === "tool") {
               rebuilt[idx] = {
                 ...current,
                 output,
@@ -392,8 +436,8 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
           } else {
             rebuilt.push({
               id: nextId(),
-              kind: 'message',
-              role: 'assistant',
+              kind: "message",
+              role: "assistant",
               text: output,
             });
           }
@@ -402,14 +446,15 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
 
       for (let i = 0; i < rebuilt.length; i += 1) {
         const entry = rebuilt[i];
-        if (entry.kind === 'tool' && !entry.resolved) {
+        if (entry.kind === "tool" && !entry.resolved) {
           rebuilt[i] = {
             ...entry,
             resolved: true,
-            status: 'failed',
+            status: "failed",
             awaitingApproval: false,
             approval: undefined,
-            output: entry.output || 'No stored result found for this tool call.',
+            output:
+              entry.output || "No stored result found for this tool call.",
             open: toolOutputsExpanded,
           };
         }
@@ -437,20 +482,28 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
 
   const buildResponseStats = useCallback((event: DoneEvent): ResponseStats => {
     const elapsedMs =
-      typeof event.elapsed_ms === 'number' && event.elapsed_ms >= 0
+      typeof event.elapsed_ms === "number" && event.elapsed_ms >= 0
         ? event.elapsed_ms
         : activeResponseStartedAtRef.current
           ? Date.now() - activeResponseStartedAtRef.current
           : 0;
 
     const toolCalls =
-      typeof event.tool_call_count === 'number' ? event.tool_call_count : activeToolCallCountRef.current;
+      typeof event.tool_call_count === "number"
+        ? event.tool_call_count
+        : activeToolCallCountRef.current;
     const toolSuccess =
-      typeof event.tool_call_success === 'number' ? event.tool_call_success : activeToolSuccessCountRef.current;
+      typeof event.tool_call_success === "number"
+        ? event.tool_call_success
+        : activeToolSuccessCountRef.current;
     const toolFailed =
-      typeof event.tool_call_failed === 'number' ? event.tool_call_failed : activeToolFailureCountRef.current;
+      typeof event.tool_call_failed === "number"
+        ? event.tool_call_failed
+        : activeToolFailureCountRef.current;
     const toolDenied =
-      typeof event.tool_call_denied === 'number' ? event.tool_call_denied : activeToolDeniedCountRef.current;
+      typeof event.tool_call_denied === "number"
+        ? event.tool_call_denied
+        : activeToolDeniedCountRef.current;
 
     return {
       elapsedMs,
@@ -470,8 +523,8 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
           ...prev.entries,
           {
             id: nextId(),
-            kind: 'message',
-            role: 'assistant',
+            kind: "message",
+            role: "assistant",
             text,
           } as MessageEntry,
         ],
@@ -488,8 +541,8 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
           ...prev.entries,
           {
             id: nextId(),
-            kind: 'message',
-            role: 'assistant',
+            kind: "message",
+            role: "assistant",
             text: `Error: ${message}`,
             error: true,
           } as MessageEntry,
@@ -516,8 +569,8 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
           ...prev.entries,
           {
             id: nextId(),
-            kind: 'message',
-            role: 'user',
+            kind: "message",
+            role: "user",
             text,
           } as MessageEntry,
         ],
@@ -549,14 +602,14 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
           currentAssistantIdRef.current = assistantId;
           entries.push({
             id: assistantId,
-            kind: 'message',
-            role: 'assistant',
-            text: '',
+            kind: "message",
+            role: "assistant",
+            text: "",
           });
         }
 
         entries = entries.map((entry) => {
-          if (entry.kind !== 'message' || entry.id !== assistantId) {
+          if (entry.kind !== "message" || entry.id !== assistantId) {
             return entry;
           }
 
@@ -587,13 +640,13 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       const formattedArgs = formatArgs(args);
       const entry: ToolEntry = {
         id: nextId(),
-        kind: 'tool',
+        kind: "tool",
         callId: callId.trim() || nextId(),
-        name: name || 'unknown_tool',
+        name: name || "unknown_tool",
         args: formattedArgs,
         argsPreview: makePreview(formattedArgs),
-        output: '',
-        status: 'running',
+        output: "",
+        status: "running",
         awaitingApproval: false,
         resolved: false,
         open: stateRef.current.toolOutputsExpanded,
@@ -617,13 +670,17 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
     const awaitingApproval = Boolean(event.awaiting_approval);
 
     if (!awaitingApproval) {
-      if (status === 'success') activeToolSuccessCountRef.current += 1;
-      if (status === 'denied') activeToolDeniedCountRef.current += 1;
-      if (status === 'failed') activeToolFailureCountRef.current += 1;
+      if (status === "success") activeToolSuccessCountRef.current += 1;
+      if (status === "denied") activeToolDeniedCountRef.current += 1;
+      if (status === "failed") activeToolFailureCountRef.current += 1;
     }
 
     setState((prev) => {
-      const idx = findToolIndex(prev.entries, event.call_id ?? '', event.name ?? '');
+      const idx = findToolIndex(
+        prev.entries,
+        event.call_id ?? "",
+        event.name ?? "",
+      );
       if (idx === -1) {
         return {
           ...prev,
@@ -633,7 +690,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
 
       const updated = [...prev.entries];
       const entry = updated[idx];
-      if (entry.kind !== 'tool') {
+      if (entry.kind !== "tool") {
         return {
           ...prev,
           isWaiting: true,
@@ -642,7 +699,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
 
       updated[idx] = {
         ...entry,
-        output: event.output ?? '',
+        output: event.output ?? "",
         status,
         awaitingApproval,
         resolved: !awaitingApproval,
@@ -658,60 +715,66 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
-  const onToolApprovalRequired = useCallback((event: ToolApprovalRequiredEvent): void => {
-    const callId = event.call_id ?? '';
-    const name = event.name ?? '';
-    const requestId = event.request_id ?? '';
-    if (!requestId) {
-      return;
-    }
-
-    setState((prev) => {
-      const idx = findToolIndex(prev.entries, callId, name);
-      if (idx === -1) {
-        return prev;
+  const onToolApprovalRequired = useCallback(
+    (event: ToolApprovalRequiredEvent): void => {
+      const callId = event.call_id ?? "";
+      const name = event.name ?? "";
+      const requestId = event.request_id ?? "";
+      if (!requestId) {
+        return;
       }
 
-      const updated = [...prev.entries];
-      const entry = updated[idx];
-      if (entry.kind !== 'tool') {
-        return prev;
-      }
+      setState((prev) => {
+        const idx = findToolIndex(prev.entries, callId, name);
+        if (idx === -1) {
+          return prev;
+        }
 
-      const suggested = (event.suggested_allow_rule ?? '').trim();
-      updated[idx] = {
-        ...entry,
-        status: 'denied',
-        awaitingApproval: true,
-        resolved: false,
-        output: event.deny_reason ?? entry.output,
-        approval: {
-          requestId,
-          suggestedAllowRule: suggested,
-          allowRuleInput: suggested,
-          submitting: false,
-        },
-        open: true,
-      };
+        const updated = [...prev.entries];
+        const entry = updated[idx];
+        if (entry.kind !== "tool") {
+          return prev;
+        }
 
-      return {
-        ...prev,
-        entries: updated,
-      };
-    });
-  }, []);
+        const suggested = (event.suggested_allow_rule ?? "").trim();
+        updated[idx] = {
+          ...entry,
+          status: "denied",
+          awaitingApproval: true,
+          resolved: false,
+          output: event.deny_reason ?? entry.output,
+          approval: {
+            requestId,
+            suggestedAllowRule: suggested,
+            allowRuleInput: suggested,
+            submitting: false,
+          },
+          open: true,
+        };
+
+        return {
+          ...prev,
+          entries: updated,
+        };
+      });
+    },
+    [],
+  );
 
   const onDone = useCallback(
     (event: DoneEvent): void => {
       const stats = buildResponseStats(event);
-      const fullResponse = event.full_response ?? '';
+      const fullResponse = event.full_response ?? "";
 
       setState((prev) => {
         if (currentAssistantIdRef.current) {
           return {
             ...prev,
             entries: prev.entries.map((entry) => {
-              if (entry.kind !== 'message' || entry.id !== currentAssistantIdRef.current) {
+              if (
+                entry.kind !== "message" ||
+                entry.id !== currentAssistantIdRef.current
+              ) {
                 return entry;
               }
               return {
@@ -732,8 +795,8 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
               ...prev.entries,
               {
                 id: nextId(),
-                kind: 'message',
-                role: 'assistant',
+                kind: "message",
+                role: "assistant",
                 text: fullResponse,
                 stats,
               } as MessageEntry,
@@ -761,17 +824,17 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       setState((prev) => ({
         ...prev,
         entries: prev.entries.map((entry) => {
-          if (entry.kind !== 'tool' || entry.resolved) {
+          if (entry.kind !== "tool" || entry.resolved) {
             return entry;
           }
 
           return {
             ...entry,
             resolved: true,
-            status: 'failed',
+            status: "failed",
             awaitingApproval: false,
             approval: undefined,
-            output: entry.output || 'Stopped by user.',
+            output: entry.output || "Stopped by user.",
             open: entry.open || prev.toolOutputsExpanded,
           };
         }),
@@ -782,8 +845,8 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       finishCurrentBubble();
       resetActiveResponseState();
 
-      if (event.reason === 'internal_cancel') {
-        onError('Run stopped due to an internal cancellation.');
+      if (event.reason === "internal_cancel") {
+        onError("Run stopped due to an internal cancellation.");
       }
     },
     [finishCurrentBubble, onError, resetActiveResponseState],
@@ -792,54 +855,65 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
   const handleEvent = useCallback(
     (event: ServerEvent): void => {
       switch (event.type) {
-        case 'user_message':
-          onUserMessage(event.content ?? '');
+        case "user_message":
+          onUserMessage(event.content ?? "");
           return;
-        case 'chunk':
-          onChunk(event.content ?? '');
+        case "chunk":
+          onChunk(event.content ?? "");
           return;
-        case 'tool_call_start':
-          onToolCallStart(event.call_id ?? '', event.name ?? '', event.args ?? '');
+        case "tool_call_start":
+          onToolCallStart(
+            event.call_id ?? "",
+            event.name ?? "",
+            event.args ?? "",
+          );
           return;
-        case 'tool_call_result':
+        case "tool_call_result":
           onToolCallResult(event);
           return;
-        case 'tool_approval_required':
+        case "tool_approval_required":
           onToolApprovalRequired(event);
           return;
-        case 'done':
+        case "done":
           onDone(event);
           return;
-        case 'stopped':
+        case "stopped":
           onStopped(event);
           return;
-        case 'thread_list':
+        case "thread_list":
           applyThreadState(event.sessions, event.current_session_id);
           return;
-        case 'thread_created':
-        case 'thread_switched':
-        case 'thread_cleared':
-        case 'thread_deleted': {
-          const fallbackSessionId = 'session_id' in event ? event.session_id : undefined;
-          applyThreadState(event.sessions, event.current_session_id ?? fallbackSessionId);
+        case "thread_created":
+        case "thread_switched":
+        case "thread_cleared":
+        case "thread_deleted": {
+          const fallbackSessionId =
+            "session_id" in event ? event.session_id : undefined;
+          applyThreadState(
+            event.sessions,
+            event.current_session_id ?? fallbackSessionId,
+          );
           hydrateCurrentThread(event.history ?? []);
           return;
         }
-        case 'thread_renamed':
+        case "thread_renamed":
           applyThreadState(event.sessions, event.current_session_id);
           return;
-        case 'permissions_state':
-          applyPermissionsState(event.permissions, event.validation_errors ?? []);
+        case "permissions_state":
+          applyPermissionsState(
+            event.permissions,
+            event.validation_errors ?? [],
+          );
           return;
-        case 'permissions_updated':
+        case "permissions_updated":
           applyPermissionsState(event.permissions, []);
           setState((prev) => ({ ...prev, permissionsSavedAt: Date.now() }));
           return;
-        case 'mcp_status':
+        case "mcp_status":
           applyMcpStatus(event.mcp);
           return;
-        case 'error':
-          onError(event.message ?? 'Unknown error');
+        case "error":
+          onError(event.message ?? "Unknown error");
       }
     },
     [
@@ -868,7 +942,10 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
     reconnectTimerRef.current = setTimeout(() => {
       reconnectTimerRef.current = null;
       connect();
-      reconnectDelayRef.current = Math.min(Math.round(reconnectDelayRef.current * 1.5), 10000);
+      reconnectDelayRef.current = Math.min(
+        Math.round(reconnectDelayRef.current * 1.5),
+        10000,
+      );
     }, reconnectDelayRef.current);
   }, []);
 
@@ -877,16 +954,16 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    setState((prev) => ({ ...prev, connectionState: 'connecting' }));
+    setState((prev) => ({ ...prev, connectionState: "connecting" }));
 
-    const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    const proto = window.location.protocol === "https:" ? "wss" : "ws";
     const socket = new WebSocket(`${proto}://${window.location.host}/ws`);
     wsRef.current = socket;
 
     socket.onopen = () => {
       setState((prev) => ({
         ...prev,
-        connectionState: 'connected',
+        connectionState: "connected",
         showReconnectOverlay: false,
       }));
 
@@ -897,15 +974,15 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         reconnectTimerRef.current = null;
       }
 
-      sendControl({ type: 'thread_list' });
-      sendControl({ type: 'permissions_get' });
+      sendControl({ type: "thread_list" });
+      sendControl({ type: "permissions_get" });
     };
 
     socket.onclose = () => {
       if (disposedRef.current) {
         return;
       }
-      setState((prev) => ({ ...prev, connectionState: 'disconnected' }));
+      setState((prev) => ({ ...prev, connectionState: "disconnected" }));
       scheduleReconnect();
     };
 
@@ -947,7 +1024,9 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
     setState((prev) => ({
       ...prev,
       toolOutputsExpanded: value,
-      entries: prev.entries.map((entry) => (entry.kind === 'tool' ? { ...entry, open: value } : entry)),
+      entries: prev.entries.map((entry) =>
+        entry.kind === "tool" ? { ...entry, open: value } : entry,
+      ),
     }));
   }, []);
 
@@ -960,7 +1039,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
     setState((prev) => ({
       ...prev,
       entries: prev.entries.map((entry) => {
-        if (entry.kind !== 'tool' || entry.id !== entryId) {
+        if (entry.kind !== "tool" || entry.id !== entryId) {
           return entry;
         }
         return { ...entry, open: !entry.open };
@@ -968,50 +1047,63 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
     }));
   }, []);
 
-  const updateApprovalRule = useCallback((entryId: string, value: string): void => {
-    setState((prev) => ({
-      ...prev,
-      entries: prev.entries.map((entry) => {
-        if (entry.kind !== 'tool' || entry.id !== entryId || !entry.approval) {
-          return entry;
-        }
-        return {
-          ...entry,
-          approval: {
-            ...entry.approval,
-            allowRuleInput: value,
-          },
-        };
-      }),
-    }));
-  }, []);
+  const updateApprovalRule = useCallback(
+    (entryId: string, value: string): void => {
+      setState((prev) => ({
+        ...prev,
+        entries: prev.entries.map((entry) => {
+          if (
+            entry.kind !== "tool" ||
+            entry.id !== entryId ||
+            !entry.approval
+          ) {
+            return entry;
+          }
+          return {
+            ...entry,
+            approval: {
+              ...entry.approval,
+              allowRuleInput: value,
+            },
+          };
+        }),
+      }));
+    },
+    [],
+  );
 
   const submitToolApproval = useCallback(
     (entryId: string, decision: ToolApprovalDecision): void => {
-      if (stateRef.current.connectionState !== 'connected') {
+      if (stateRef.current.connectionState !== "connected") {
         return;
       }
 
-      const idx = stateRef.current.entries.findIndex((entry) => entry.kind === 'tool' && entry.id === entryId);
+      const idx = stateRef.current.entries.findIndex(
+        (entry) => entry.kind === "tool" && entry.id === entryId,
+      );
       if (idx === -1) {
         return;
       }
 
       const current = stateRef.current.entries[idx];
-      if (current.kind !== 'tool' || !current.approval || current.approval.submitting) {
+      if (
+        current.kind !== "tool" ||
+        !current.approval ||
+        current.approval.submitting
+      ) {
         return;
       }
 
       const allowRule = current.approval.allowRuleInput.trim();
-      if (decision === 'allow_persist' && !allowRule) {
-        onError('Allow rule is required for persistent approval.');
+      if (decision === "allow_persist" && !allowRule) {
+        onError("Allow rule is required for persistent approval.");
         return;
       }
 
       setState((prev) => ({
         ...prev,
         entries: prev.entries.map((entry, index) => {
-          if (index !== idx || entry.kind !== 'tool' || !entry.approval) {
+          if (index !== idx || entry.kind !== "tool" || !entry.approval) {
             return entry;
           }
           return {
@@ -1025,7 +1117,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       }));
 
       sendControl({
-        type: 'tool_approval_decision',
+        type: "tool_approval_decision",
         request_id: current.approval.requestId,
         decision,
         allow_rule: allowRule,
@@ -1036,12 +1128,16 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
 
   const requestKillSwitch = useCallback((): void => {
     const snapshot = stateRef.current;
-    if (snapshot.connectionState !== 'connected' || !snapshot.isWaiting || snapshot.killRequested) {
+    if (
+      snapshot.connectionState !== "connected" ||
+      !snapshot.isWaiting ||
+      snapshot.killRequested
+    ) {
       return;
     }
 
     setState((prev) => ({ ...prev, killRequested: true }));
-    sendControl({ type: 'kill_switch' });
+    sendControl({ type: "kill_switch" });
   }, [sendControl]);
 
   const switchThread = useCallback(
@@ -1057,7 +1153,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         killRequested: false,
       }));
       resetActiveResponseState();
-      sendControl({ type: 'thread_switch', session_id: sessionId });
+      sendControl({ type: "thread_switch", session_id: sessionId });
     },
     [resetActiveResponseState, sendControl],
   );
@@ -1065,7 +1161,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
   const createThread = useCallback(
     (displayName?: string): void => {
       sendControl({
-        type: 'thread_create',
+        type: "thread_create",
         ...(displayName ? { display_name: displayName } : {}),
       });
     },
@@ -1078,7 +1174,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         return;
       }
       sendControl({
-        type: 'thread_rename',
+        type: "thread_rename",
         session_id: sessionId,
         display_name: displayName,
       });
@@ -1096,7 +1192,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       killRequested: false,
     }));
     resetActiveResponseState();
-    sendControl({ type: 'thread_clear' });
+    sendControl({ type: "thread_clear" });
   }, [resetActiveResponseState, sendControl]);
 
   const deleteThread = useCallback(
@@ -1110,22 +1206,25 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         killRequested: false,
       }));
       resetActiveResponseState();
-      sendControl({ type: 'thread_delete', session_id: sessionId });
+      sendControl({ type: "thread_delete", session_id: sessionId });
     },
     [resetActiveResponseState, sendControl],
   );
 
   const refreshPermissions = useCallback((): void => {
-    sendControl({ type: 'permissions_get' });
+    sendControl({ type: "permissions_get" });
   }, [sendControl]);
 
   const refreshThreads = useCallback((): void => {
-    sendControl({ type: 'thread_list' });
+    sendControl({ type: "thread_list" });
   }, [sendControl]);
 
   const savePermissions = useCallback((): void => {
     const snapshot = stateRef.current;
-    if (snapshot.connectionState !== 'connected' || snapshot.permissionsSaving) {
+    if (
+      snapshot.connectionState !== "connected" ||
+      snapshot.permissionsSaving
+    ) {
       return;
     }
 
@@ -1136,20 +1235,25 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
     }));
 
     sendControl({
-      type: 'permissions_set',
+      type: "permissions_set",
       enabled: snapshot.permissionsEnabled,
       allow: parseRulesInput(snapshot.permissionsAllowText),
       deny: parseRulesInput(snapshot.permissionsDenyText),
     });
   }, [sendControl]);
 
-  const updatePermissionsField = useCallback((field: 'allow' | 'deny', value: string): void => {
-    setState((prev) => ({
-      ...prev,
-      permissionsAllowText: field === 'allow' ? value : prev.permissionsAllowText,
-      permissionsDenyText: field === 'deny' ? value : prev.permissionsDenyText,
-    }));
-  }, []);
+  const updatePermissionsField = useCallback(
+    (field: "allow" | "deny", value: string): void => {
+      setState((prev) => ({
+        ...prev,
+        permissionsAllowText:
+          field === "allow" ? value : prev.permissionsAllowText,
+        permissionsDenyText:
+          field === "deny" ? value : prev.permissionsDenyText,
+      }));
+    },
+    [],
+  );
 
   const updatePermissionsEnabled = useCallback((value: boolean): void => {
     setState((prev) => ({ ...prev, permissionsEnabled: value }));
@@ -1157,88 +1261,90 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
 
   const runSlashCommand = useCallback(
     (raw: string): boolean => {
-      if (!raw.startsWith('/')) {
+      if (!raw.startsWith("/")) {
         return false;
       }
 
       const body = raw.slice(1).trim();
       if (!body) {
-        onError('Empty slash command');
+        onError("Empty slash command");
         return true;
       }
 
-      const firstSpace = body.indexOf(' ');
-      const cmd = (firstSpace === -1 ? body : body.slice(0, firstSpace)).toLowerCase();
-      const arg = (firstSpace === -1 ? '' : body.slice(firstSpace + 1)).trim();
+      const firstSpace = body.indexOf(" ");
+      const cmd = (
+        firstSpace === -1 ? body : body.slice(0, firstSpace)
+      ).toLowerCase();
+      const arg = (firstSpace === -1 ? "" : body.slice(firstSpace + 1)).trim();
 
-      if (cmd === 'help') {
+      if (cmd === "help") {
         pushAssistantNote(
-          'Session commands: `/new [name]`, `/rename <name>`, `/clear`, `/delete`, `/stop`\nTool view: `/tools <collapse|expand|hide|show>`',
+          "Session commands: `/new [name]`, `/rename <name>`, `/clear`, `/delete`, `/stop`\nTool view: `/tools <collapse|expand|hide|show>`",
         );
         return true;
       }
 
-      if (cmd === 'stop') {
+      if (cmd === "stop") {
         requestKillSwitch();
         return true;
       }
 
-      if (cmd === 'tools') {
+      if (cmd === "tools") {
         const mode = arg.toLowerCase();
-        if (mode === 'collapse') {
+        if (mode === "collapse") {
           setToolOutputsExpanded(false);
-          pushAssistantNote('Collapsed all tool outputs.');
+          pushAssistantNote("Collapsed all tool outputs.");
           return true;
         }
-        if (mode === 'expand') {
+        if (mode === "expand") {
           setToolOutputsExpanded(true);
-          pushAssistantNote('Expanded all tool outputs.');
+          pushAssistantNote("Expanded all tool outputs.");
           return true;
         }
-        if (mode === 'hide') {
+        if (mode === "hide") {
           setShowToolCalls(false);
-          pushAssistantNote('Tool call blocks are now hidden.');
+          pushAssistantNote("Tool call blocks are now hidden.");
           return true;
         }
-        if (mode === 'show') {
+        if (mode === "show") {
           setShowToolCalls(true);
-          pushAssistantNote('Tool call blocks are now visible.');
+          pushAssistantNote("Tool call blocks are now visible.");
           return true;
         }
-        onError('Usage: /tools <collapse|expand|hide|show>');
+        onError("Usage: /tools <collapse|expand|hide|show>");
         return true;
       }
 
-      if (cmd === 'new') {
+      if (cmd === "new") {
         createThread(arg || undefined);
         return true;
       }
 
-      if (cmd === 'rename') {
+      if (cmd === "rename") {
         if (!stateRef.current.currentSessionId) {
-          onError('No active session to rename');
+          onError("No active session to rename");
           return true;
         }
         if (!arg) {
-          onError('Usage: /rename <display name>');
+          onError("Usage: /rename <display name>");
           return true;
         }
         renameThread(stateRef.current.currentSessionId, arg);
         return true;
       }
 
-      if (cmd === 'clear') {
+      if (cmd === "clear") {
         if (!stateRef.current.currentSessionId) {
-          onError('No active session to clear');
+          onError("No active session to clear");
           return true;
         }
         clearCurrentThread();
         return true;
       }
 
-      if (cmd === 'delete') {
+      if (cmd === "delete") {
         if (!stateRef.current.currentSessionId) {
-          onError('No active session to delete');
+          onError("No active session to delete");
           return true;
         }
         deleteThread(stateRef.current.currentSessionId);
@@ -1265,7 +1371,12 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
     (rawText: string): void => {
       const text = rawText.trim();
       const ws = wsRef.current;
-      if (!text || stateRef.current.isWaiting || !ws || ws.readyState !== WebSocket.OPEN) {
+      if (
+        !text ||
+        stateRef.current.isWaiting ||
+        !ws ||
+        ws.readyState !== WebSocket.OPEN
+      ) {
         return;
       }
 
@@ -1276,7 +1387,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
 
       ws.send(
         JSON.stringify({
-          type: 'message',
+          type: "message",
           content: text,
         }),
       );
@@ -1329,13 +1440,17 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
     ],
   );
 
-  return <AppStoreContext.Provider value={value}>{children}</AppStoreContext.Provider>;
+  return (
+    <AppStoreContext.Provider value={value}>
+      {children}
+    </AppStoreContext.Provider>
+  );
 }
 
 export function useAppStore(): AppStore {
   const context = useContext(AppStoreContext);
   if (!context) {
-    throw new Error('useAppStore must be used inside AppStoreProvider');
+    throw new Error("useAppStore must be used inside AppStoreProvider");
   }
   return context;
 }

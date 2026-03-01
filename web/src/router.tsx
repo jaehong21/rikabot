@@ -1,4 +1,8 @@
-import { createRootRoute, createRoute, createRouter } from "@tanstack/react-router";
+import {
+  createRootRoute,
+  createRoute,
+  createRouter,
+} from "@tanstack/react-router";
 
 import { AppShell } from "@/components/app-shell";
 import { ChatPage } from "@/routes/chat-page";
@@ -27,7 +31,11 @@ const threadsRoute = createRoute({
   component: ThreadsPage,
 });
 
-const routeTree = rootRoute.addChildren([chatRoute, settingsRoute, threadsRoute]);
+const routeTree = rootRoute.addChildren([
+  chatRoute,
+  settingsRoute,
+  threadsRoute,
+]);
 
 export const router = createRouter({
   routeTree,

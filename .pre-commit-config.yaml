@@ -10,3 +10,9 @@ repos:
         entry: cargo fmt
         files: ^src/.*\.rs$
         pass_filenames: false
+      - id: bun-format
+        name: bun run format
+        language: system
+        entry: "bash -c 'cd web && bun run format'"
+        files: ^web/
+        pass_filenames: false

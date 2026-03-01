@@ -1,4 +1,4 @@
-export type ConnectionState = 'connecting' | 'connected' | 'disconnected';
+export type ConnectionState = "connecting" | "connected" | "disconnected";
 
 export type ThreadRecord = {
   id: string;
@@ -30,16 +30,16 @@ export type ResponseStats = {
 
 export type MessageEntry = {
   id: string;
-  kind: 'message';
-  role: 'user' | 'assistant';
+  kind: "message";
+  role: "user" | "assistant";
   text: string;
   error?: boolean;
   stats?: ResponseStats;
 };
 
-export type ToolStatus = 'running' | 'success' | 'failed' | 'denied';
+export type ToolStatus = "running" | "success" | "failed" | "denied";
 
-export type ToolApprovalDecision = 'allow_persist' | 'allow_once' | 'deny';
+export type ToolApprovalDecision = "allow_persist" | "allow_once" | "deny";
 
 export type ToolApprovalState = {
   requestId: string;
@@ -50,7 +50,7 @@ export type ToolApprovalState = {
 
 export type ToolEntry = {
   id: string;
-  kind: 'tool';
+  kind: "tool";
   callId: string;
   name: string;
   args: string;
@@ -73,7 +73,12 @@ export type PermissionsState = {
   };
 };
 
-export type McpServerState = 'pending' | 'connecting' | 'ready' | 'failed' | 'disabled';
+export type McpServerState =
+  | "pending"
+  | "connecting"
+  | "ready"
+  | "failed"
+  | "disabled";
 
 export type McpServerStatus = {
   name: string;
@@ -88,7 +93,7 @@ export type McpStatusSnapshot = {
 };
 
 export type DoneEvent = {
-  type: 'done';
+  type: "done";
   full_response?: string;
   elapsed_ms?: number;
   tool_call_count?: number;
@@ -99,31 +104,31 @@ export type DoneEvent = {
 };
 
 export type StoppedEvent = {
-  type: 'stopped';
+  type: "stopped";
   reason?: string;
   session_id?: string;
 };
 
 export type ToolCallStartEvent = {
-  type: 'tool_call_start';
+  type: "tool_call_start";
   call_id?: string;
   name?: string;
   args?: unknown;
 };
 
 export type ToolCallResultEvent = {
-  type: 'tool_call_result';
+  type: "tool_call_result";
   call_id?: string;
   name?: string;
   output?: string;
   success?: boolean;
-  status?: ToolStatus | 'failure';
+  status?: ToolStatus | "failure";
   approval_request_id?: string;
   awaiting_approval?: boolean;
 };
 
 export type ToolApprovalRequiredEvent = {
-  type: 'tool_approval_required';
+  type: "tool_approval_required";
   request_id?: string;
   call_id?: string;
   name?: string;
@@ -133,61 +138,61 @@ export type ToolApprovalRequiredEvent = {
 };
 
 export type ServerEvent =
-  | { type: 'user_message'; content?: string }
-  | { type: 'chunk'; content?: string }
+  | { type: "user_message"; content?: string }
+  | { type: "chunk"; content?: string }
   | ToolCallStartEvent
   | ToolCallResultEvent
   | ToolApprovalRequiredEvent
   | DoneEvent
   | StoppedEvent
-  | { type: 'error'; message?: string }
+  | { type: "error"; message?: string }
   | {
-      type: 'thread_list';
+      type: "thread_list";
       current_session_id?: string;
       sessions?: ThreadRecord[];
     }
   | {
-      type: 'thread_created';
+      type: "thread_created";
       current_session_id?: string;
       sessions?: ThreadRecord[];
       history?: HistoryMessage[];
     }
   | {
-      type: 'thread_renamed';
+      type: "thread_renamed";
       current_session_id?: string;
       sessions?: ThreadRecord[];
     }
   | {
-      type: 'thread_switched';
+      type: "thread_switched";
       session_id?: string;
       current_session_id?: string;
       sessions?: ThreadRecord[];
       history?: HistoryMessage[];
     }
   | {
-      type: 'thread_cleared';
+      type: "thread_cleared";
       session_id?: string;
       current_session_id?: string;
       sessions?: ThreadRecord[];
       history?: HistoryMessage[];
     }
   | {
-      type: 'thread_deleted';
+      type: "thread_deleted";
       deleted_session_id?: string;
       current_session_id?: string;
       sessions?: ThreadRecord[];
       history?: HistoryMessage[];
     }
   | {
-      type: 'permissions_state';
+      type: "permissions_state";
       permissions?: PermissionsState;
       validation_errors?: string[];
     }
   | {
-      type: 'permissions_updated';
+      type: "permissions_updated";
       permissions?: PermissionsState;
     }
   | {
-      type: 'mcp_status';
+      type: "mcp_status";
       mcp?: McpStatusSnapshot;
     };
