@@ -33,11 +33,11 @@ export function LeftRail({ onNavigate }: LeftRailProps) {
   const readyServers = state.mcpServers.filter((server) => server.state === 'ready').length;
 
   return (
-    <div className="flex h-full flex-col bg-white/20 p-3 md:p-4">
+    <div className="flex h-full flex-col bg-input/20 p-3 md:p-4">
       <div className="space-y-3">
         <div className="flex items-center justify-between">
           <p className="text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">Workspace</p>
-          <Badge variant="secondary" className="rounded-sm bg-black/5 text-[10px]">
+          <Badge variant="secondary" className="rounded-sm bg-foreground/5 text-[10px]">
             Rika
           </Badge>
         </div>

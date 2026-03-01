@@ -1,29 +1,29 @@
-@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@300..700&display=swap');
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {
-  --background: 42 41% 95%;
-  --foreground: 36 17% 14%;
-  --card: 40 32% 98%;
-  --card-foreground: 36 17% 14%;
-  --popover: 42 41% 96%;
-  --popover-foreground: 36 17% 14%;
-  --primary: 18 57% 55%;
-  --primary-foreground: 35 60% 98%;
-  --secondary: 39 29% 89%;
-  --secondary-foreground: 36 17% 20%;
-  --muted: 40 24% 87%;
-  --muted-foreground: 32 12% 38%;
-  --accent: 35 36% 83%;
-  --accent-foreground: 37 18% 20%;
-  --destructive: 349 53% 52%;
-  --destructive-foreground: 0 0% 100%;
-  --border: 34 25% 75%;
-  --input: 34 25% 75%;
-  --ring: 18 57% 55%;
+  --background: 250 249 245;
+  --foreground: 20 20 20;
+  --card: 250 249 245;
+  --card-foreground: 20 20 20;
+  --popover: 255 255 255;
+  --popover-foreground: 20 20 20;
+  --primary: 198 96 63;
+  --primary-foreground: 20 20 20;
+  --secondary: 250 249 245;
+  --secondary-foreground: 20 20 20;
+  --muted: 250 249 245;
+  --muted-foreground: 20 20 20;
+  --accent: 250 249 245;
+  --accent-foreground: 20 20 20;
+  --destructive: 198 96 63;
+  --destructive-foreground: 20 20 20;
+  --border: 20 20 20;
+  --input: 255 255 255;
+  --ring: 198 96 63;
   --radius: 0.95rem;
 }
 
@@ -40,9 +40,9 @@ body,
 body {
   @apply bg-background text-foreground antialiased font-sans;
   background-image:
-    radial-gradient(circle at 15% 0%, rgba(207, 111, 74, 0.16), transparent 38%),
-    radial-gradient(circle at 100% 100%, rgba(46, 143, 144, 0.14), transparent 40%),
-    linear-gradient(155deg, rgba(255, 255, 255, 0.48), rgba(255, 255, 255, 0.08));
+    radial-gradient(circle at 15% 0%, rgba(198, 96, 63, 0.16), transparent 38%),
+    radial-gradient(circle at 100% 100%, rgba(20, 20, 20, 0.06), transparent 40%),
+    linear-gradient(155deg, rgba(255, 255, 255, 0.48), rgba(250, 249, 245, 0.08));
 }
 
 .app-noise {
@@ -54,7 +54,7 @@ body {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  background-image: radial-gradient(rgba(31, 28, 23, 0.06) 0.6px, transparent 0.6px);
+  background-image: radial-gradient(rgba(20, 20, 20, 0.06) 0.6px, transparent 0.6px);
   background-size: 3px 3px;
   opacity: 0.3;
 }
@@ -64,11 +64,11 @@ body {
 }
 
 .message-prose pre {
-  @apply mt-2 overflow-auto rounded-md bg-black/90 px-3 py-2 text-xs text-orange-50;
+  @apply mt-2 overflow-auto rounded-md border border-border/20 bg-input px-3 py-2 text-xs text-foreground;
 }
 
 .message-prose code {
-  @apply rounded bg-black/10 px-1.5 py-0.5 font-mono text-[0.8em];
+  @apply rounded bg-foreground/10 px-1.5 py-0.5 font-mono text-[0.8em];
 }
 
 .status-dot {
@@ -77,5 +77,5 @@ body {
 
 .scroll-soft {
   scrollbar-width: thin;
-  scrollbar-color: rgba(100, 86, 66, 0.5) transparent;
+  scrollbar-color: rgba(20, 20, 20, 0.5) transparent;
 }

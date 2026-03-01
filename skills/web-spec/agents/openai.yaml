@@ -1,0 +1,4 @@
+interface:
+  display_name: "Web Spec"
+  short_description: "Enforce project web palette and typography spec"
+  default_prompt: "Use $web-spec to apply the project web color and typography rules before making UI changes."

@@ -15,9 +15,9 @@ function connectionLabel(state: 'connecting' | 'connected' | 'disconnected'): st
 }
 
 function connectionTone(state: 'connecting' | 'connected' | 'disconnected'): string {
-  if (state === 'connected') return 'bg-emerald-500';
-  if (state === 'connecting') return 'bg-amber-500';
-  return 'bg-rose-500';
+  if (state === 'connected') return 'bg-primary';
+  if (state === 'connecting') return 'bg-foreground/55';
+  return 'bg-foreground/30';
 }
 
 export function AppShell() {

@@ -209,7 +209,7 @@ export function ChatPage() {
                   <CollapsibleTrigger asChild>
                     <button
                       type="button"
-                      className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-black/[0.03]"
+                      className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-foreground/[0.03]"
                     >
                       <div>
                         <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
@@ -238,7 +238,7 @@ export function ChatPage() {
                       <p className="mb-1 text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
                         Arguments
                       </p>
-                      <pre className="overflow-auto rounded-md bg-black/90 px-3 py-2 font-mono text-xs text-orange-50">
+                      <pre className="overflow-auto rounded-md border border-border/20 bg-input px-3 py-2 font-mono text-xs text-foreground">
                         {entry.args}
                       </pre>
                     </div>
@@ -248,7 +248,7 @@ export function ChatPage() {
                         <p className="mb-1 text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
                           Output
                         </p>
-                        <pre className="max-h-56 overflow-auto rounded-md bg-black/90 px-3 py-2 font-mono text-xs text-orange-50">
+                        <pre className="max-h-56 overflow-auto rounded-md border border-border/20 bg-input px-3 py-2 font-mono text-xs text-foreground">
                           {entry.output}
                         </pre>
                       </div>
