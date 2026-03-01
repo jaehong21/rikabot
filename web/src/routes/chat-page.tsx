@@ -1,19 +1,51 @@
-import { useEffect, useRef, useState } from "react";
-import { ArrowUp, Square } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ArrowUp, ChevronDown, ChevronRight, Square } from "lucide-react";
 
 import { useAppStore } from "@/context/app-store";
 import { renderMarkdown } from "@/lib/markdown";
+import type { MessageEntry, ToolEntry } from "@/types/app";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 
+function toolStatusText(status: ToolEntry["status"]): string {
+  if (status === "running") return "Running";
+  if (status === "success") return "Success";
+  if (status === "denied") return "Denied";
+  return "Failed";
+}
+
+function summarizeToolGroup(entries: ToolEntry[]): string {
+  const total = entries.length;
+  const running = entries.filter((entry) => entry.status === "running").length;
+  const denied = entries.filter((entry) => entry.status === "denied").length;
+  const failed = entries.filter((entry) => entry.status === "failed").length;
+
+  if (running > 0) {
+    return `Running ${running} of ${total} tool call${total > 1 ? "s" : ""}`;
+  }
+
+  if (denied > 0 || failed > 0) {
+    return `Ran ${total} tool call${total > 1 ? "s" : ""} (${denied} denied, ${failed} failed)`;
+  }
+
+  return `Ran ${total} tool call${total > 1 ? "s" : ""}`;
+}
+
 export function ChatPage() {
-  const { state, sendMessage, requestKillSwitch, updateApprovalRule, submitToolApproval } =
-    useAppStore();
+  const {
+    state,
+    sendMessage,
+    requestKillSwitch,
+    toggleToolOpen,
+    updateApprovalRule,
+    submitToolApproval,
+  } = useAppStore();
 
   const [draft, setDraft] = useState("");
+  const [openToolGroups, setOpenToolGroups] = useState<Record<string, boolean>>({});
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -49,6 +81,32 @@ export function ChatPage() {
     node.style.height = `${Math.min(node.scrollHeight, 180)}px`;
   };
 
+  const groupedEntries = useMemo(() => {
+    const groups: Array<
+      | { kind: "message"; entry: MessageEntry }
+      | { kind: "tool-group"; id: string; entries: ToolEntry[] }
+    > = [];
+
+    for (let index = 0; index < state.entries.length; index += 1) {
+      const entry = state.entries[index];
+
+      if (entry.kind === "message") {
+        groups.push({ kind: "message", entry });
+        continue;
+      }
+
+      const toolEntries: ToolEntry[] = [entry];
+      while (index + 1 < state.entries.length && state.entries[index + 1].kind === "tool") {
+        toolEntries.push(state.entries[index + 1] as ToolEntry);
+        index += 1;
+      }
+
+      groups.push({ kind: "tool-group", id: toolEntries[0].id, entries: toolEntries });
+    }
+
+    return groups;
+  }, [state.entries]);
+
   return (
     <div className="relative h-full min-h-0 bg-transparent">
       <ScrollArea className="h-full min-h-0">
@@ -61,8 +119,9 @@ export function ChatPage() {
               <p className="pt-2 text-sm text-muted-foreground">Start a conversation.</p>
             )}
 
-            {state.entries.map((entry) => {
-              if (entry.kind === "message") {
+            {groupedEntries.map((item) => {
+              if (item.kind === "message") {
+                const entry = item.entry;
                 if (entry.role === "user") {
                   return (
                     <div key={entry.id} className="flex justify-end">
@@ -94,52 +153,132 @@ export function ChatPage() {
                 );
               }
 
-              if (!entry.awaitingApproval || !entry.approval) {
+              const hasApproval = item.entries.some((entry) => entry.awaitingApproval && entry.approval);
+              if (!state.showToolCalls && !hasApproval) {
                 return null;
               }
 
+              const groupOpen = openToolGroups[item.id] ?? true;
+
               return (
-                <section key={entry.id} className="rounded-2xl border border-border bg-input p-4">
-                  <p className="text-sm font-semibold">Approval required</p>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    This tool call was blocked by permissions. Persist a rule, allow once, or deny.
-                  </p>
-                  <Input
-                    value={entry.approval.allowRuleInput}
-                    disabled={entry.approval.submitting}
-                    onChange={(event) => updateApprovalRule(entry.id, event.currentTarget.value)}
-                    placeholder="shell(command:git status *)"
-                    className="mt-3"
-                  />
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    <Button
-                      size="sm"
-                      onClick={() => submitToolApproval(entry.id, "allow_persist")}
-                      disabled={entry.approval.submitting}
-                    >
-                      Always allow
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => submitToolApproval(entry.id, "allow_once")}
-                      disabled={entry.approval.submitting}
-                    >
-                      Allow once
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="destructive"
-                      onClick={() => submitToolApproval(entry.id, "deny")}
-                      disabled={entry.approval.submitting}
-                    >
-                      Deny
-                    </Button>
-                  </div>
+                <section key={item.id} className="space-y-2">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setOpenToolGroups((prev) => ({ ...prev, [item.id]: !(prev[item.id] ?? true) }))
+                    }
+                    className="inline-flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
+                  >
+                    {groupOpen ? (
+                      <ChevronDown className="h-3.5 w-3.5" />
+                    ) : (
+                      <ChevronRight className="h-3.5 w-3.5" />
+                    )}
+                    <span>{summarizeToolGroup(item.entries)}</span>
+                  </button>
+
+                  {(groupOpen || hasApproval) && (
+                    <div className="space-y-2 pl-2">
+                      {item.entries.map((entry) => (
+                        <article key={entry.id} className="rounded-xl border border-border/70 bg-input/60 p-3">
+                          <button
+                            type="button"
+                            onClick={() => toggleToolOpen(entry.id)}
+                            className="flex w-full items-center justify-between gap-3 text-left"
+                          >
+                            <div className="min-w-0">
+                              <p className="truncate text-sm text-foreground">{entry.name}</p>
+                              {!entry.open && (
+                                <p className="mt-1 line-clamp-1 text-xs text-muted-foreground">
+                                  {entry.argsPreview || "No input"}
+                                </p>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                              <span>{toolStatusText(entry.status)}</span>
+                              {entry.open ? (
+                                <ChevronDown className="h-3.5 w-3.5" />
+                              ) : (
+                                <ChevronRight className="h-3.5 w-3.5" />
+                              )}
+                            </div>
+                          </button>
+
+                          {entry.open && (
+                            <div className="mt-3 space-y-2 border-l border-border/70 pl-3">
+                              <div>
+                                <p className="text-[11px] uppercase tracking-[0.12em] text-muted-foreground">
+                                  Input
+                                </p>
+                                <pre className="mt-1 overflow-x-auto rounded-lg border border-border/60 bg-input px-3 py-2 text-xs text-foreground">
+                                  {entry.args || entry.argsPreview || "No input"}
+                                </pre>
+                              </div>
+
+                              <div>
+                                <p className="text-[11px] uppercase tracking-[0.12em] text-muted-foreground">
+                                  Output
+                                </p>
+                                <pre className="mt-1 max-h-56 overflow-auto rounded-lg border border-border/60 bg-input px-3 py-2 text-xs text-foreground">
+                                  {entry.output || "No output"}
+                                </pre>
+                              </div>
+
+                              {entry.awaitingApproval && entry.approval && (
+                                <section className="rounded-lg border border-border bg-input p-3">
+                                  <p className="text-sm font-semibold">Approval required</p>
+                                  <p className="mt-1 text-xs text-muted-foreground">
+                                    This tool call was blocked by permissions. Persist a rule,
+                                    allow once, or deny.
+                                  </p>
+                                  <Input
+                                    value={entry.approval.allowRuleInput}
+                                    disabled={entry.approval.submitting}
+                                    onChange={(event) =>
+                                      updateApprovalRule(entry.id, event.currentTarget.value)
+                                    }
+                                    placeholder="shell(command:git status *)"
+                                    className="mt-3"
+                                  />
+                                  <div className="mt-3 flex flex-wrap gap-2">
+                                    <Button
+                                      size="sm"
+                                      onClick={() => submitToolApproval(entry.id, "allow_persist")}
+                                      disabled={entry.approval.submitting}
+                                      className="rounded-[0.55rem] bg-foreground text-input hover:bg-foreground/90"
+                                    >
+                                      Always allow
+                                    </Button>
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      onClick={() => submitToolApproval(entry.id, "allow_once")}
+                                      disabled={entry.approval.submitting}
+                                      className="rounded-[0.55rem] border-border bg-transparent text-foreground hover:bg-background"
+                                    >
+                                      Allow once
+                                    </Button>
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      onClick={() => submitToolApproval(entry.id, "deny")}
+                                      disabled={entry.approval.submitting}
+                                      className="rounded-[0.55rem] border-border bg-transparent text-foreground hover:bg-background"
+                                    >
+                                      Deny
+                                    </Button>
+                                  </div>
+                                </section>
+                              )}
+                            </div>
+                          )}
+                        </article>
+                      ))}
+                    </div>
+                  )}
                 </section>
               );
             })}
-
             {state.isWaiting && (
               <div className="inline-flex items-center gap-1 py-1">
                 <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-foreground/70" />
