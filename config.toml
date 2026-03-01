@@ -11,19 +11,19 @@
 # system_prompt = "You are Rika, a helpful personal AI assistant. You can execute shell commands using the shell tool when needed."
 # temperature = 0.1
 
-workspace_dir = "./workspace" # default: ~/.rika/workspace
+# workspace_dir = "./workspace" # default: ~/.rika/workspace
 
 # provider is required (no default)
-provider = "openai"
-model = "gpt-5.2"
+# provider = "openai"
+# model = "gpt-5.2"
 
-[providers.openai]
-base_url = "http://localhost:8317/v1" # default: https://api.openai.com/v1
+# [providers.openai]
+# base_url = "http://localhost:8317/v1" # default: https://api.openai.com/v1
 # env_key = "OPENAI_API_KEY"
-api_key = "xxx"
+# api_key = "xxx"
 
-[permissions]
-enabled = true
+# [permissions]
+# enabled = true
 
 # [providers.openrouter]
 # api_key = "YOUR_OPENROUTER_API_KEY"
@@ -39,27 +39,28 @@ enabled = true
 # [permissions]
 # enabled = true
 
-[permissions.tools]
-allow = [
-  "filesystem_*(*)",
-  "shell(command:cat *)",
-  "shell(command:cd *)",
-  "shell(command:chmod *)",
-  "shell(command:cp *)",
-  "shell(command:curl *)",
-  "shell(command:find *)",
-  "shell(command:ls *)",
-  "shell(command:mkdir *)",
-  "shell(command:rg *)",
-  "mcp_linear_*(*)",
-  "mcp_notion_*(*)"
-]
-deny = []
+# [permissions.tools]
+# allow = [
+#   "filesystem_*(*)",
+#   "shell(command:cat *)",
+#   "shell(command:cd *)",
+#   "shell(command:chmod *)",
+#   "shell(command:cp *)",
+#   "shell(command:curl *)",
+#   "shell(command:find *)",
+#   "shell(command:ls *)",
+#   "shell(command:mkdir *)",
+#   "shell(command:rg *)",
+#   "mcp_linear_*(*)",
+#   "mcp_notion_*(*)"
+# ]
+# deny = []
 # IMPORTANT: when permissions are enabled and allow is empty, policy is default deny.
 # allow = [
 #   "shell(command:git status *)",
 #   "shell(command:npm run *)",
 #   "filesystem_read(path:docs/*)"
+#   "mcp_linear_*(*)"
 # ]
 # deny = [
 #   "shell(command:git push *)"
@@ -77,21 +78,17 @@ deny = []
 # tool_timeout_secs = 180 # max: 600
 # init_timeout_secs = 30
 
-[[mcp.servers]]
-name = "linear"
-transport = "http"
-auth_mode = "oauth" # "headers" | "oauth"
-url = "https://mcp.linear.app/mcp"
+# [[mcp.servers]]
+# name = "linear"
+# transport = "http"
+# auth_mode = "oauth" # "headers" | "oauth"
+# url = "https://mcp.linear.app/mcp"
+#
 # For headers mode
 # headers = { Authorization = "Bearer ${LINEAR_API_KEY}" }
+#
 # For oauth mode, client_id is optional when provider supports dynamic client registration.
 # oauth_client_id = "your-client-id"
 # oauth_client_secret_env = "LINEAR_OAUTH_CLIENT_SECRET"
 # oauth_scopes = ["read"]
 # oauth_authorization_server = "https://mcp.linear.app"
-
-[[mcp.servers]]
-name = "notion"
-transport = "http"
-auth_mode = "oauth"
-url = "https://mcp.notion.com/mcp"
