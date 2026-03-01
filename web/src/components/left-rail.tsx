@@ -78,7 +78,7 @@ export function LeftRail({ onNavigate, onOpenCommandPalette }: LeftRailProps) {
           </div>
 
           <section className="space-y-1 overflow-hidden">
-            <p className="px-2 text-[0.75rem] text-muted-foreground">
+            <p className="px-2 text-[0.75rem] text-muted-foreground opacity-50">
               Sessions
             </p>
             {sessions.length === 0 && (

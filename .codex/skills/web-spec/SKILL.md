@@ -47,6 +47,7 @@ description: Enforce the project web UI specification for colors, typography, an
   - text: `#FFFFFF`
 - For secondary/outline actions, use separator border and transparent/input backgrounds.
 - Replace non-compliant colors with token-based equivalents when touching UI files.
+- For de-emphasized metadata text (e.g. tool call labels, summaries, helper text), prefer `opacity-50` on foreground/muted text instead of introducing new gray colors.
 
 ### Settings Switch UI
 
@@ -66,6 +67,7 @@ description: Enforce the project web UI specification for colors, typography, an
 - Search for disallowed color literals and utility colors before finalizing.
 - Confirm separators use the approved color and thin stroke.
 - Confirm newly touched components consume theme tokens (no ad-hoc inline color styles).
+- Confirm de-emphasized gray text uses `opacity-50` where applicable.
 - Run checks after UI edits:
   - `cd web && bun run typecheck`
   - `cd web && bun run build`

@@ -34,6 +34,16 @@ function toolStatusText(status: ToolEntry["status"]): string {
   return "Failed";
 }
 
+function toolStatusBadgeClass(status: ToolEntry["status"]): string {
+  if (status === "failed") {
+    return "border border-red-200 bg-red-100 text-red-700";
+  }
+  if (status === "denied") {
+    return "border border-amber-200 bg-amber-100 text-amber-700";
+  }
+  return "bg-foreground/10 text-foreground/80";
+}
+
 function summarizeToolGroup(entries: ToolEntry[]): string {
   const total = entries.length;
   const running = entries.filter((entry) => entry.status === "running").length;
@@ -251,47 +261,53 @@ export function ChatPage() {
                     className="inline-flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
                   >
                     {groupOpen ? (
-                      <ChevronDown className="h-3.5 w-3.5" />
+                      <ChevronDown className="h-3.5 w-3.5 opacity-50" />
                     ) : (
-                      <ChevronRight className="h-3.5 w-3.5" />
+                      <ChevronRight className="h-3.5 w-3.5 opacity-50" />
                     )}
-                    <span>{summarizeToolGroup(item.entries)}</span>
+                    <span className="opacity-50">
+                      {summarizeToolGroup(item.entries)}
+                    </span>
                   </button>
 
                   {(groupOpen || hasApproval) && (
                     <div className="space-y-2 pl-2">
                       {item.entries.map((entry) => (
-                        <article
-                          key={entry.id}
-                          className="rounded-xl border border-border/70 bg-input/60 p-3"
-                        >
+                        <article key={entry.id} className="py-1">
                           <button
                             type="button"
                             onClick={() => toggleToolOpen(entry.id)}
-                            className="flex w-full items-center justify-between gap-3 text-left"
+                            className="flex w-full items-start gap-2 text-left"
                           >
-                            <div className="min-w-0">
-                              <p className="truncate text-sm text-foreground">
-                                {entry.name}
-                              </p>
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-2">
+                                <p className="truncate text-sm text-foreground opacity-50">
+                                  {entry.name}
+                                </p>
+                                <span
+                                  className={cn(
+                                    "shrink-0 rounded px-1.5 py-0.5 font-mono text-[10px] leading-none",
+                                    toolStatusBadgeClass(entry.status),
+                                  )}
+                                >
+                                  {toolStatusText(entry.status)}
+                                </span>
+                              </div>
                               {!entry.open && (
-                                <p className="mt-1 line-clamp-1 text-xs text-muted-foreground">
+                                <p className="mt-1 line-clamp-1 text-xs text-muted-foreground opacity-50">
                                   {entry.argsPreview || "No input"}
                                 </p>
                               )}
                             </div>
-                            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                              <span>{toolStatusText(entry.status)}</span>
-                              {entry.open ? (
-                                <ChevronDown className="h-3.5 w-3.5" />
-                              ) : (
-                                <ChevronRight className="h-3.5 w-3.5" />
-                              )}
-                            </div>
+                            {entry.open ? (
+                              <ChevronDown className="mt-0.5 h-3.5 w-3.5 text-muted-foreground" />
+                            ) : (
+                              <ChevronRight className="mt-0.5 h-3.5 w-3.5 text-muted-foreground" />
+                            )}
                           </button>
 
                           {entry.open && (
-                            <div className="mt-3 space-y-2 border-l border-border/70 pl-3">
+                            <div className="mt-2 space-y-2">
                               <div>
                                 <p className="text-[11px] uppercase tracking-[0.12em] text-muted-foreground">
                                   Input
