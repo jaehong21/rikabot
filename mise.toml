@@ -7,6 +7,7 @@ prettier = "latest"
 
 [env]
 RUST_LOG = "rikabot=info,reqwest=warn,hyper_util=warn"
+# RUSTFLAGS = "-Awarnings"
 
 [hooks]
 postinstall = '''

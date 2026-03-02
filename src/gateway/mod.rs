@@ -5,17 +5,17 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use axum::{
-    http::StatusCode,
-    response::IntoResponse,
-    routing::{get, get_service},
+    body::Body,
+    http::{header, StatusCode, Uri},
+    response::{IntoResponse, Response},
+    routing::get,
     Router,
 };
+use mime_guess::from_path;
+use rust_embed::{EmbeddedFile, RustEmbed};
 use serde_json::Value;
 use tokio::{sync::mpsc, task::JoinHandle};
-use tower_http::{
-    services::{ServeDir, ServeFile},
-    timeout::TimeoutLayer,
-};
+use tower_http::timeout::TimeoutLayer;
 
 use crate::agent::Agent;
 use crate::agent::ToolApprovalDecision;
@@ -71,17 +71,59 @@ async fn health_handler() -> impl IntoResponse {
     (StatusCode::OK, "ok")
 }
 
+#[derive(RustEmbed)]
+#[folder = "web/dist/"]
+struct WebAssets;
+
+fn static_file_response(path: &str, file: EmbeddedFile) -> Response {
+    let mime = from_path(path).first_or_octet_stream();
+    (
+        [(header::CONTENT_TYPE, mime.as_ref())],
+        Body::from(file.data.into_owned()),
+    )
+        .into_response()
+}
+
+fn is_asset_path(path: &str) -> bool {
+    path.rsplit('/')
+        .next()
+        .is_some_and(|segment| segment.contains('.'))
+}
+
+async fn static_handler(uri: Uri) -> Response {
+    let trimmed_path = uri.path().trim_start_matches('/');
+    let path = if trimmed_path.is_empty() {
+        "index.html"
+    } else {
+        trimmed_path
+    };
+
+    if let Some(file) = WebAssets::get(path) {
+        return static_file_response(path, file);
+    }
+
+    if !is_asset_path(path) {
+        if let Some(index) = WebAssets::get("index.html") {
+            return static_file_response("index.html", index);
+        }
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "embedded web assets are missing index.html",
+        )
+            .into_response();
+    }
+
+    (StatusCode::NOT_FOUND, "not found").into_response()
+}
+
 // ── Router & server ─────────────────────────────────────────────────────────
 
 /// Build the Axum router with all routes.
 fn build_router(state: AppState) -> Router {
-    let web_service =
-        get_service(ServeDir::new("web/dist").fallback(ServeFile::new("web/dist/index.html")));
-
     Router::new()
         .route("/health", get(health_handler))
         .route("/ws", get(ws::ws_handler))
-        .fallback_service(web_service)
+        .fallback(get(static_handler))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
             std::time::Duration::from_secs(30),
