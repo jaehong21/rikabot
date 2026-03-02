@@ -162,6 +162,8 @@ async fn run_system_event(
     let tool_registry = tools::default_registry(
         &workspace_dir,
         permission_engine,
+        &config.shell,
+        &config.process,
         &config.web_fetch,
         &config.web_search,
     );
