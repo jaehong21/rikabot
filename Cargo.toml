@@ -3,6 +3,7 @@ name = "rikabot"
 version = "0.1.0"
 description = "Rika is a lightweight, local-first AI assistant platform."
 repository = "https://github.com/jaehong21/rikabot"
+license = "MIT"
 edition = "2021"
 include = [
   "src/**",
