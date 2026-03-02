@@ -192,6 +192,17 @@ export function ChatPage() {
   );
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const scrollStateRef = useRef<{
+    initialized: boolean;
+    sessionId: string | null;
+    messageCount: number;
+    toolCount: number;
+  }>({
+    initialized: false,
+    sessionId: null,
+    messageCount: 0,
+    toolCount: 0,
+  });
 
   const canSend =
     !state.isWaiting &&
@@ -229,21 +240,49 @@ export function ChatPage() {
       return;
     }
 
+    const messageCount = state.entries.reduce(
+      (count, entry) => count + (entry.kind === "message" ? 1 : 0),
+      0,
+    );
+    const toolCount = state.entries.reduce(
+      (count, entry) => count + (entry.kind === "tool" ? 1 : 0),
+      0,
+    );
+    const previous = scrollStateRef.current;
+    const sessionChanged = previous.sessionId !== state.currentSessionId;
+    const shouldSmoothScroll =
+      previous.initialized &&
+      !sessionChanged &&
+      (messageCount > previous.messageCount || toolCount > previous.toolCount);
+    const shouldJumpToBottom = !previous.initialized || sessionChanged;
+
     const viewport = container.closest("[data-radix-scroll-area-viewport]");
     const scrollNode = viewport instanceof HTMLElement ? viewport : container;
 
     const frame = requestAnimationFrame(() => {
-      scrollNode.scrollTo({ top: scrollNode.scrollHeight, behavior: "smooth" });
+      if (shouldSmoothScroll) {
+        scrollNode.scrollTo({
+          top: scrollNode.scrollHeight,
+          behavior: "smooth",
+        });
+        return;
+      }
+
+      if (shouldJumpToBottom) {
+        scrollNode.scrollTop = scrollNode.scrollHeight;
+      }
     });
-    const settle = window.setTimeout(() => {
-      scrollNode.scrollTop = scrollNode.scrollHeight;
-    }, 220);
+    scrollStateRef.current = {
+      initialized: true,
+      sessionId: state.currentSessionId,
+      messageCount,
+      toolCount,
+    };
 
     return () => {
       cancelAnimationFrame(frame);
-      window.clearTimeout(settle);
     };
-  }, [state.entries, state.isWaiting, state.currentSessionId]);
+  }, [state.entries, state.currentSessionId]);
 
   useEffect(() => {
     const handleSlashFocus = (event: KeyboardEvent): void => {
