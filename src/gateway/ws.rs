@@ -1,3 +1,6 @@
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
 use axum::{
     extract::{
         ws::{Message, WebSocket},
@@ -6,15 +9,17 @@ use axum::{
     response::IntoResponse,
 };
 use futures_util::{SinkExt, StreamExt};
+use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Deserialize;
 use serde_json::Value;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::agent::{AgentEvent, ToolApprovalDecision, ToolApprovalDecisionKind};
 use crate::config::{PermissionsConfig, ToolPermissionsConfig};
 use crate::gateway::{ActiveRunState, AppState};
 use crate::mcp_runtime::McpStatusSnapshot;
 use crate::permissions::PermissionEngine;
+use crate::prompt::SessionPromptContext;
 use crate::providers::ChatMessage;
 
 /// Inbound message from the client.
@@ -48,6 +53,24 @@ struct RunOutcome {
     previous_len: usize,
 }
 
+struct SessionRunInput {
+    history: Vec<ChatMessage>,
+    session_display_name: String,
+}
+
+pub async fn spawn_session_change_watcher(state: AppState) {
+    let sessions_dir = {
+        let sessions = state.sessions.lock().await;
+        sessions.sessions_dir_path().to_path_buf()
+    };
+
+    tokio::spawn(async move {
+        if let Err(err) = run_session_change_watcher(state, sessions_dir).await {
+            tracing::warn!("session change watcher stopped: {}", err);
+        }
+    });
+}
+
 /// Axum handler that upgrades an HTTP request to a WebSocket connection.
 pub async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
     ws.on_upgrade(move |socket| handle_socket(socket, state))
@@ -57,6 +80,7 @@ pub async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> 
 async fn handle_socket(socket: WebSocket, state: AppState) {
     let (mut ws_sink, mut ws_stream) = socket.split();
     let (run_signal_tx, mut run_signal_rx) = mpsc::unbounded_channel::<Value>();
+    let mut thread_event_rx = state.thread_events.subscribe();
     let mut mcp_status_rx = state.mcp_runtime.subscribe();
 
     let (mut current_session_id, mut history) = match hydrate_current_thread(&state).await {
@@ -148,8 +172,8 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                             _ => continue,
                         };
 
-                        let base_history = match load_history_for_session(&state, &current_session_id).await {
-                            Ok(history) => history,
+                        let run_input = match load_session_run_input(&state, &current_session_id).await {
+                            Ok(input) => input,
                             Err(err) => {
                                 let _ = send_error(
                                     &mut ws_sink,
@@ -164,7 +188,8 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                             &state,
                             run_signal_tx.clone(),
                             &current_session_id,
-                            &base_history,
+                            &run_input.history,
+                            &run_input.session_display_name,
                             content,
                         )
                         .await
@@ -246,6 +271,15 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                     break;
                                 }
 
+                                if is_thread_mutating_event(&event) {
+                                    if let Err(err) = broadcast_reloaded_thread_list(&state).await {
+                                        tracing::warn!(
+                                            "failed to broadcast thread mutation update: {}",
+                                            err
+                                        );
+                                    }
+                                }
+
                                 if let Some(switched_session_id) = switched_to {
                                     if let Err(err) = attach_to_active_run(
                                         &state,
@@ -288,6 +322,25 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                     break;
                 }
             }
+            thread_event = thread_event_rx.recv() => {
+                match thread_event {
+                    Ok(payload) => {
+                        if ws_sink
+                            .send(Message::text(payload.to_string()))
+                            .await
+                        .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        if send_thread_list(&mut ws_sink, &state).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
             status_update = mcp_status_rx.changed() => {
                 if status_update.is_err() {
                     break;
@@ -303,14 +356,89 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     tracing::debug!("WebSocket connection closed");
 }
 
+async fn run_session_change_watcher(state: AppState, sessions_dir: PathBuf) -> anyhow::Result<()> {
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel::<notify::Result<Event>>();
+    let mut watcher = RecommendedWatcher::new(
+        move |result| {
+            let _ = event_tx.send(result);
+        },
+        notify::Config::default(),
+    )?;
+
+    watcher.watch(&sessions_dir, RecursiveMode::NonRecursive)?;
+
+    while let Some(event_result) = event_rx.recv().await {
+        let event = match event_result {
+            Ok(event) => event,
+            Err(err) => {
+                tracing::warn!("session watcher event error: {}", err);
+                continue;
+            }
+        };
+
+        if !is_relevant_session_event(&event) {
+            continue;
+        }
+
+        // Coalesce bursty rename/write notifications into one reload + broadcast.
+        tokio::time::sleep(Duration::from_millis(75)).await;
+        while let Ok(next_result) = event_rx.try_recv() {
+            if let Err(err) = next_result {
+                tracing::warn!("session watcher event error: {}", err);
+            }
+        }
+
+        if let Err(err) = broadcast_reloaded_thread_list(&state).await {
+            tracing::warn!("failed to broadcast session update: {}", err);
+        }
+    }
+
+    Ok(())
+}
+
+fn is_relevant_session_event(event: &Event) -> bool {
+    if !matches!(
+        event.kind,
+        EventKind::Any
+            | EventKind::Create(_)
+            | EventKind::Modify(_)
+            | EventKind::Remove(_)
+            | EventKind::Other
+    ) {
+        return false;
+    }
+
+    if event.paths.is_empty() {
+        return true;
+    }
+
+    event
+        .paths
+        .iter()
+        .any(|path| is_session_file_path(path.as_path()))
+}
+
+fn is_session_file_path(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name == "sessions.json" || name.ends_with(".jsonl"))
+}
+
 async fn spawn_active_run(
     state: &AppState,
     run_signal_tx: mpsc::UnboundedSender<Value>,
     session_id: &str,
     history: &[ChatMessage],
+    session_display_name: &str,
     content: String,
 ) -> anyhow::Result<()> {
-    let system_prompt = state.prompt_manager.build_prompt()?;
+    let system_prompt =
+        state
+            .prompt_manager
+            .build_prompt_with_session(Some(&SessionPromptContext {
+                session_id: session_id.to_string(),
+                session_display_name: session_display_name.to_string(),
+            }))?;
     let mut runs_guard = state.runs.lock().await;
     if runs_guard.active.is_some() {
         return Err(anyhow::anyhow!(
@@ -327,6 +455,7 @@ async fn spawn_active_run(
     let agent = state.agent.clone();
     let sessions = state.sessions.clone();
     let run_store = state.runs.clone();
+    let thread_events = state.thread_events.clone();
     let mut history_clone = history.to_vec();
     let previous_len = history_clone.len();
     let content_for_event = content.clone();
@@ -387,15 +516,24 @@ async fn spawn_active_run(
                     });
                     broadcast_run_payload(&run_store, run_id, payload).await;
                 } else {
-                    let thread_list_payload = {
-                        let sessions = sessions.lock().await;
-                        serde_json::json!({
-                            "type": "thread_list",
-                            "current_session_id": sessions.current_session_id(),
-                            "sessions": sessions.list_sessions(),
-                        })
+                    let thread_list_payload = match build_thread_list_payload_from_sessions(
+                        &sessions, false,
+                    )
+                    .await
+                    {
+                        Ok(payload) => payload,
+                        Err(err) => {
+                            let payload = serde_json::json!({
+                                "type": "error",
+                                "message": format!("Failed to build thread list payload: {}", err),
+                            });
+                            broadcast_run_payload(&run_store, run_id, payload).await;
+                            clear_active_run(&run_store, run_id).await;
+                            return;
+                        }
                     };
-                    broadcast_run_payload(&run_store, run_id, thread_list_payload).await;
+                    broadcast_run_payload(&run_store, run_id, thread_list_payload.clone()).await;
+                    let _ = thread_events.send(thread_list_payload);
                 }
             }
         }
@@ -482,12 +620,21 @@ async fn clear_active_run(
     }
 }
 
-async fn load_history_for_session(
+async fn load_session_run_input(
     state: &AppState,
     session_id: &str,
-) -> anyhow::Result<Vec<ChatMessage>> {
+) -> anyhow::Result<SessionRunInput> {
     let mut sessions = state.sessions.lock().await;
-    sessions.load_history(session_id)
+    sessions.reload_from_disk()?;
+    let history = sessions.load_history(session_id)?;
+    let session_display_name = sessions
+        .get_session(session_id)
+        .map(|record| record.display_name)
+        .unwrap_or_else(|| session_id.to_string());
+    Ok(SessionRunInput {
+        history,
+        session_display_name,
+    })
 }
 
 async fn has_active_run(state: &AppState) -> bool {
@@ -553,23 +700,48 @@ async fn stop_active_run(state: &AppState, reason: &str, session_id: Option<&str
 
 async fn hydrate_current_thread(state: &AppState) -> anyhow::Result<(String, Vec<ChatMessage>)> {
     let mut sessions = state.sessions.lock().await;
+    sessions.reload_from_disk()?;
     let sid = sessions.current_session_id().to_string();
     let history = sessions.load_history(&sid)?;
     Ok((sid, history))
 }
 
-async fn send_thread_list(
-    ws_sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+async fn build_thread_list_payload(
     state: &AppState,
-) -> anyhow::Result<()> {
+    reload_from_disk: bool,
+) -> anyhow::Result<Value> {
+    build_thread_list_payload_from_sessions(&state.sessions, reload_from_disk).await
+}
+
+async fn build_thread_list_payload_from_sessions(
+    sessions: &std::sync::Arc<tokio::sync::Mutex<crate::session::SessionManager>>,
+    reload_from_disk: bool,
+) -> anyhow::Result<Value> {
     let payload = {
-        let sessions = state.sessions.lock().await;
+        let mut sessions = sessions.lock().await;
+        if reload_from_disk {
+            sessions.reload_from_disk()?;
+        }
         serde_json::json!({
             "type": "thread_list",
             "current_session_id": sessions.current_session_id(),
             "sessions": sessions.list_sessions(),
         })
     };
+    Ok(payload)
+}
+
+async fn broadcast_reloaded_thread_list(state: &AppState) -> anyhow::Result<()> {
+    let payload = build_thread_list_payload(state, true).await?;
+    let _ = state.thread_events.send(payload);
+    Ok(())
+}
+
+async fn send_thread_list(
+    ws_sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    state: &AppState,
+) -> anyhow::Result<()> {
+    let payload = build_thread_list_payload(state, true).await?;
     ws_sink
         .send(Message::text(payload.to_string()))
         .await
@@ -798,16 +970,10 @@ async fn handle_thread_command(
     history: &mut Vec<ChatMessage>,
 ) -> anyhow::Result<Option<serde_json::Value>> {
     match client_msg.msg_type.as_str() {
-        "thread_list" => {
-            let sessions = state.sessions.lock().await;
-            Ok(Some(serde_json::json!({
-                "type": "thread_list",
-                "current_session_id": sessions.current_session_id(),
-                "sessions": sessions.list_sessions(),
-            })))
-        }
+        "thread_list" => Ok(Some(build_thread_list_payload(state, true).await?)),
         "thread_create" => {
             let mut sessions = state.sessions.lock().await;
+            sessions.reload_from_disk()?;
             let created = sessions.create_session(client_msg.display_name.as_deref())?;
             *current_session_id = created.id.clone();
             history.clear();
@@ -823,6 +989,7 @@ async fn handle_thread_command(
             let sid = required_field(client_msg.session_id.as_deref(), "session_id")?;
             let display_name = required_field(client_msg.display_name.as_deref(), "display_name")?;
             let mut sessions = state.sessions.lock().await;
+            sessions.reload_from_disk()?;
             let record = sessions.rename_session(sid, display_name)?;
             Ok(Some(serde_json::json!({
                 "type": "thread_renamed",
@@ -834,6 +1001,7 @@ async fn handle_thread_command(
         "thread_switch" => {
             let sid = required_field(client_msg.session_id.as_deref(), "session_id")?;
             let mut sessions = state.sessions.lock().await;
+            sessions.reload_from_disk()?;
             let (_record, loaded_history) = sessions.switch_session(sid)?;
             *current_session_id = sid.to_string();
             *history = loaded_history.clone();
@@ -847,6 +1015,7 @@ async fn handle_thread_command(
         }
         "thread_clear" => {
             let mut sessions = state.sessions.lock().await;
+            sessions.reload_from_disk()?;
             let (record, loaded_history) = sessions.clear_current_session()?;
             *current_session_id = record.id.clone();
             *history = loaded_history.clone();
@@ -861,6 +1030,7 @@ async fn handle_thread_command(
         "thread_delete" => {
             let sid = required_field(client_msg.session_id.as_deref(), "session_id")?;
             let mut sessions = state.sessions.lock().await;
+            sessions.reload_from_disk()?;
             let deleted = sessions.delete_session(sid)?;
             let loaded_history = sessions.load_history(&deleted.current_session_id)?;
             *current_session_id = deleted.current_session_id.clone();
@@ -888,6 +1058,19 @@ fn is_thread_mutating_command(msg_type: &str) -> bool {
     matches!(
         msg_type,
         "thread_create" | "thread_rename" | "thread_switch" | "thread_clear" | "thread_delete"
+    )
+}
+
+fn is_thread_mutating_event(event: &Value) -> bool {
+    matches!(
+        event.get("type").and_then(|value| value.as_str()),
+        Some(
+            "thread_created"
+                | "thread_renamed"
+                | "thread_switched"
+                | "thread_cleared"
+                | "thread_deleted"
+        )
     )
 }
 
@@ -966,6 +1149,7 @@ mod tests {
             runs: Arc::new(tokio::sync::Mutex::new(
                 crate::gateway::RunManager::default(),
             )),
+            thread_events: tokio::sync::broadcast::channel(64).0,
             permissions_config: Arc::new(tokio::sync::RwLock::new(PermissionsConfig {
                 enabled: false,
                 tools: ToolPermissionsConfig::default(),

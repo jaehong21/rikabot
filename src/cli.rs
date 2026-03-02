@@ -6,17 +6,19 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::mpsc;
 use tracing_subscriber::EnvFilter;
 
-use crate::agent;
+use crate::agent::{self, AgentEvent};
 use crate::config;
 use crate::config_store;
 use crate::gateway;
 use crate::mcp_runtime;
 use crate::permissions;
-use crate::prompt;
+use crate::prompt::{self, SessionPromptContext};
 use crate::providers;
 use crate::session;
+use crate::system_events;
 use crate::tools;
 
 #[derive(Debug, Parser)]
@@ -50,9 +52,33 @@ enum Commands {
     Stop,
     /// Show daemon status
     Status,
+    /// System-level commands
+    System {
+        #[command(subcommand)]
+        command: SystemCommands,
+    },
     /// Internal foreground server command used by lifecycle commands
     #[command(hide = true)]
     Serve,
+}
+
+#[derive(Debug, Subcommand)]
+enum SystemCommands {
+    /// Trigger a system event as a normal agent turn
+    Event {
+        /// Event text (required)
+        #[arg(long, value_name = "TEXT")]
+        text: String,
+        /// Existing session UUID to continue
+        #[arg(long, value_name = "UUID")]
+        session_id: Option<String>,
+        /// Display name to use if a new session is created
+        #[arg(long, value_name = "NAME")]
+        session_display_name: Option<String>,
+        /// Output machine-readable JSON
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,6 +95,15 @@ struct RuntimeContext {
     runtime_state_path: PathBuf,
 }
 
+#[derive(Debug, Serialize)]
+struct SystemEventCommandOutput {
+    status: String,
+    event_id: String,
+    session_id: String,
+    session_display_name: String,
+    response: Option<String>,
+}
+
 pub async fn run() -> Result<()> {
     let cli = Cli::parse();
 
@@ -81,6 +116,152 @@ pub async fn run() -> Result<()> {
             Ok(())
         }
         Commands::Status => status_server(cli.config.as_deref()).await,
+        Commands::System { command } => run_system_command(cli.config.as_deref(), command).await,
+    }
+}
+
+async fn run_system_command(config_arg: Option<&str>, command: SystemCommands) -> Result<()> {
+    match command {
+        SystemCommands::Event {
+            text,
+            session_id,
+            session_display_name,
+            json,
+        } => {
+            run_system_event(
+                config_arg,
+                &text,
+                session_id.as_deref(),
+                session_display_name.as_deref(),
+                json,
+            )
+            .await
+        }
+    }
+}
+
+async fn run_system_event(
+    config_arg: Option<&str>,
+    text: &str,
+    session_id: Option<&str>,
+    session_display_name: Option<&str>,
+    json_output: bool,
+) -> Result<()> {
+    let content = text.trim();
+    if content.is_empty() {
+        anyhow::bail!("--text must not be empty");
+    }
+
+    let config = config::AppConfig::load(config_arg)?;
+    let workspace_dir = config.resolve_workspace_dir()?;
+
+    let provider: Box<dyn providers::Provider> = providers::create_provider(&config)?;
+    let permission_engine = Arc::new(tokio::sync::RwLock::new(
+        permissions::PermissionEngine::from_config(&config.permissions)?,
+    ));
+    let tool_registry = tools::default_registry(
+        &workspace_dir,
+        permission_engine,
+        &config.web_fetch,
+        &config.web_search,
+    );
+    let agent = agent::Agent::new(
+        provider,
+        tool_registry,
+        config.model.clone(),
+        config.temperature,
+    );
+    let prompt_manager = prompt::PromptManager::new(
+        &workspace_dir,
+        config.skills.enabled,
+        prompt::PromptLimits {
+            bootstrap_max_chars: config.prompt.bootstrap_max_chars,
+            bootstrap_total_max_chars: config.prompt.bootstrap_total_max_chars,
+        },
+    )?;
+
+    let mut sessions = session::SessionManager::new(&workspace_dir)?;
+    let (session_record, mut history) = if let Some(raw_session_id) = session_id {
+        sessions.switch_session(raw_session_id)?
+    } else {
+        let created = sessions.create_session(session_display_name)?;
+        (created, Vec::new())
+    };
+
+    let previous_len = history.len();
+    let mut event = system_events::SystemEventHandle::create(
+        &workspace_dir,
+        content,
+        &session_record.id,
+        &session_record.display_name,
+    )?;
+    let event_id = event.event_id().to_string();
+
+    event.mark_running()?;
+
+    let system_prompt = prompt_manager.build_prompt_with_session(Some(&SessionPromptContext {
+        session_id: session_record.id.clone(),
+        session_display_name: session_record.display_name.clone(),
+    }))?;
+
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel::<AgentEvent>();
+    let (_approval_tx, approval_rx) = mpsc::unbounded_channel();
+    let run_result = agent
+        .run(
+            system_prompt,
+            &mut history,
+            content.to_string(),
+            event_tx,
+            approval_rx,
+        )
+        .await;
+
+    let mut final_response: Option<String> = None;
+    while let Ok(evt) = event_rx.try_recv() {
+        if let AgentEvent::Done { full_response, .. } = evt {
+            final_response = Some(full_response);
+        }
+    }
+
+    if run_result.is_ok() && previous_len <= history.len() {
+        let appended = &history[previous_len..];
+        sessions.append_messages(&session_record.id, appended)?;
+    }
+
+    let status_result = match run_result {
+        Ok(()) => event.mark_done(),
+        Err(_) => event.mark_failed(),
+    };
+    status_result?;
+
+    let cleanup_result = event.cleanup();
+
+    match run_result {
+        Ok(()) => {
+            cleanup_result?;
+            if json_output {
+                let output = SystemEventCommandOutput {
+                    status: "ok".to_string(),
+                    event_id,
+                    session_id: session_record.id,
+                    session_display_name: session_record.display_name,
+                    response: final_response,
+                };
+                println!("{}", serde_json::to_string_pretty(&output)?);
+            } else {
+                println!(
+                    "System event processed in session {} ({})",
+                    session_record.id, session_record.display_name
+                );
+            }
+            Ok(())
+        }
+        Err(err) => {
+            if let Err(cleanup_err) = cleanup_result {
+                return Err(err.context(format!("event cleanup also failed: {}", cleanup_err)));
+            }
+            Err(err)
+        }
     }
 }
 
@@ -440,7 +621,7 @@ async fn run_server(config_arg: Option<&str>) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cli, Commands};
+    use super::{Cli, Commands, SystemCommands};
     use clap::Parser;
 
     #[test]
@@ -474,5 +655,39 @@ mod tests {
             err.kind(),
             clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
         );
+    }
+
+    #[test]
+    fn cli_parses_system_event() {
+        let cli = Cli::try_parse_from([
+            "rika",
+            "system",
+            "event",
+            "--text",
+            "Done: built feature",
+            "--session-id",
+            "11111111-1111-1111-1111-111111111111",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::System {
+                command:
+                    SystemCommands::Event {
+                        text,
+                        session_id,
+                        session_display_name,
+                        json,
+                    },
+            } => {
+                assert_eq!(text, "Done: built feature");
+                assert_eq!(
+                    session_id.as_deref(),
+                    Some("11111111-1111-1111-1111-111111111111")
+                );
+                assert_eq!(session_display_name, None);
+                assert!(!json);
+            }
+            other => panic!("expected system event command, got {other:?}"),
+        }
     }
 }

@@ -9,6 +9,7 @@ mod prompt;
 mod providers;
 mod session;
 mod skills;
+mod system_events;
 mod tools;
 
 use anyhow::Result;

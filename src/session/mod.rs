@@ -83,6 +83,24 @@ impl SessionManager {
         sessions
     }
 
+    pub fn get_session(&self, session_id: &str) -> Option<SessionRecord> {
+        self.index
+            .sessions
+            .iter()
+            .find(|record| record.id == session_id)
+            .cloned()
+    }
+
+    pub fn sessions_dir_path(&self) -> &Path {
+        &self.sessions_dir
+    }
+
+    pub fn reload_from_disk(&mut self) -> Result<()> {
+        self.index = self.load_or_recover_index()?;
+        self.ensure_bootstrap_session_internal(false)?;
+        Ok(())
+    }
+
     pub fn create_session(&mut self, display_name: Option<&str>) -> Result<SessionRecord> {
         let id = Uuid::new_v4().to_string();
         let now = now_rfc3339();
@@ -304,6 +322,10 @@ impl SessionManager {
     }
 
     fn ensure_bootstrap_session(&mut self) -> Result<()> {
+        self.ensure_bootstrap_session_internal(true)
+    }
+
+    fn ensure_bootstrap_session_internal(&mut self, persist_index: bool) -> Result<()> {
         self.index.version = INDEX_VERSION;
 
         for record in &self.index.sessions {
@@ -324,7 +346,9 @@ impl SessionManager {
             return Ok(());
         }
 
-        self.save_index()?;
+        if persist_index {
+            self.save_index()?;
+        }
         Ok(())
     }
 
@@ -458,6 +482,8 @@ mod tests {
             .rename_session(&s2.id, "renamed thread")
             .expect("rename");
         assert_eq!(renamed.display_name, "renamed thread");
+        let fetched = manager.get_session(&s2.id).expect("get session");
+        assert_eq!(fetched.display_name, "renamed thread");
 
         manager
             .append_messages(
@@ -498,5 +524,28 @@ mod tests {
         let mut manager3 = SessionManager::new(&workspace).expect("create manager 3");
         let history = manager3.load_history(&sid).expect("load recovered history");
         assert!(history.is_empty());
+    }
+
+    #[test]
+    fn reload_from_disk_observes_external_session_updates() {
+        let workspace = temp_workspace("reload");
+        let mut manager = SessionManager::new(&workspace).expect("create manager");
+
+        let created = {
+            let mut external = SessionManager::new(&workspace).expect("create external manager");
+            external
+                .create_session(Some("external session"))
+                .expect("create external session")
+        };
+
+        manager.reload_from_disk().expect("reload from disk");
+        assert_eq!(manager.current_session_id(), created.id);
+        assert_eq!(
+            manager
+                .get_session(&created.id)
+                .expect("session should exist")
+                .display_name,
+            "external session"
+        );
     }
 }

@@ -39,6 +39,12 @@ pub struct PromptManager {
     limits: PromptLimits,
 }
 
+#[derive(Debug, Clone)]
+pub struct SessionPromptContext {
+    pub session_id: String,
+    pub session_display_name: String,
+}
+
 impl PromptManager {
     pub fn new(workspace_dir: &Path, skills_enabled: bool, limits: PromptLimits) -> Result<Self> {
         fs::create_dir_all(workspace_dir).with_context(|| {
@@ -69,6 +75,13 @@ impl PromptManager {
     }
 
     pub fn build_prompt(&self) -> Result<String> {
+        self.build_prompt_with_session(None)
+    }
+
+    pub fn build_prompt_with_session(
+        &self,
+        session: Option<&SessionPromptContext>,
+    ) -> Result<String> {
         let mut sections: Vec<String> = Vec::new();
 
         if self.skills_enabled {
@@ -77,6 +90,10 @@ impl PromptManager {
             if !skills_section.trim().is_empty() {
                 sections.push(skills_section);
             }
+        }
+
+        if let Some(session_context) = build_session_context_section(session) {
+            sections.push(session_context);
         }
 
         sections.push(self.build_workspace_context());
@@ -203,6 +220,25 @@ fn count_chars(input: &str) -> usize {
     input.chars().count()
 }
 
+fn build_session_context_section(session: Option<&SessionPromptContext>) -> Option<String> {
+    let session = session?;
+    let session_id = session.session_id.trim();
+    if session_id.is_empty() {
+        return None;
+    }
+
+    let display_name = if session.session_display_name.trim().is_empty() {
+        session_id
+    } else {
+        session.session_display_name.trim()
+    };
+
+    Some(format!(
+        "# Session Context\n\n- session_id: {}\n- session_display_name: {}",
+        session_id, display_name
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -307,5 +343,37 @@ mod tests {
         let prompt = manager.build_prompt().expect("build prompt");
         assert!(prompt.contains(&"A".repeat(32)));
         assert!(!prompt.contains(&"A".repeat(64)));
+    }
+
+    #[test]
+    fn injects_session_context_when_provided() {
+        let workspace = temp_workspace("session_ctx");
+        let manager = manager(&workspace, 20_000, 150_000);
+        let session = SessionPromptContext {
+            session_id: "a-session-id".to_string(),
+            session_display_name: "My Session".to_string(),
+        };
+
+        let prompt = manager
+            .build_prompt_with_session(Some(&session))
+            .expect("build prompt");
+        assert!(prompt.contains("# Session Context"));
+        assert!(prompt.contains("session_id: a-session-id"));
+        assert!(prompt.contains("session_display_name: My Session"));
+    }
+
+    #[test]
+    fn session_context_skips_when_session_id_blank() {
+        let workspace = temp_workspace("session_ctx_blank");
+        let manager = manager(&workspace, 20_000, 150_000);
+        let session = SessionPromptContext {
+            session_id: "   ".to_string(),
+            session_display_name: "Name".to_string(),
+        };
+
+        let prompt = manager
+            .build_prompt_with_session(Some(&session))
+            .expect("build prompt");
+        assert!(!prompt.contains("# Session Context"));
     }
 }

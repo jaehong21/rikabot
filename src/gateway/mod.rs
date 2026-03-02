@@ -14,7 +14,10 @@ use axum::{
 use mime_guess::from_path;
 use rust_embed::{EmbeddedFile, RustEmbed};
 use serde_json::Value;
-use tokio::{sync::mpsc, task::JoinHandle};
+use tokio::{
+    sync::{broadcast, mpsc},
+    task::JoinHandle,
+};
 use tower_http::timeout::TimeoutLayer;
 
 use crate::agent::Agent;
@@ -60,6 +63,7 @@ pub struct AppState {
     pub sessions: Arc<tokio::sync::Mutex<SessionManager>>,
     pub prompt_manager: Arc<PromptManager>,
     pub runs: Arc<tokio::sync::Mutex<RunManager>>,
+    pub thread_events: broadcast::Sender<Value>,
     pub permissions_config: Arc<tokio::sync::RwLock<PermissionsConfig>>,
     pub permission_engine: Arc<tokio::sync::RwLock<PermissionEngine>>,
     pub config_store: Arc<ConfigStore>,
@@ -143,16 +147,19 @@ pub async fn serve(
     config_store: Arc<ConfigStore>,
     mcp_runtime: Arc<McpRuntime>,
 ) -> Result<()> {
+    let (thread_events, _) = broadcast::channel::<Value>(64);
     let state = AppState {
         agent,
         sessions,
         prompt_manager,
         runs: Arc::new(tokio::sync::Mutex::new(RunManager::default())),
+        thread_events,
         permissions_config,
         permission_engine,
         config_store,
         mcp_runtime,
     };
+    ws::spawn_session_change_watcher(state.clone()).await;
     let app = build_router(state);
 
     let addr = format!("{}:{}", host, port);

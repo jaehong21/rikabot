@@ -231,6 +231,15 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
   const disposedRef = useRef(false);
   const idCounterRef = useRef(0);
   const currentAssistantIdRef = useRef<string | null>(null);
+  const autoRefreshSwitchInFlightRef = useRef(false);
+  const suppressAutoRefreshErrorRef = useRef(false);
+  const currentThreadSnapshotRef = useRef<{
+    sessionId: string | null;
+    messageCount: number;
+  }>({
+    sessionId: null,
+    messageCount: 0,
+  });
   const activeResponseStartedAtRef = useRef<number | null>(null);
   const activeToolCallCountRef = useRef(0);
   const activeToolSuccessCountRef = useRef(0);
@@ -275,6 +284,34 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       }));
     },
     [],
+  );
+
+  const updateCurrentThreadSnapshot = useCallback(
+    (threads?: ThreadRecord[], currentId?: string): void => {
+      const list = Array.isArray(threads) ? threads : stateRef.current.threads;
+      const sid = currentId ?? stateRef.current.currentSessionId;
+      if (!sid) {
+        currentThreadSnapshotRef.current = {
+          sessionId: null,
+          messageCount: 0,
+        };
+        return;
+      }
+      const match = list.find((item) => item.id === sid);
+      currentThreadSnapshotRef.current = {
+        sessionId: sid,
+        messageCount: match?.message_count ?? 0,
+      };
+    },
+    [],
+  );
+
+  const applyThreadStateAndSnapshot = useCallback(
+    (threads?: ThreadRecord[], currentId?: string): void => {
+      applyThreadState(threads, currentId);
+      updateCurrentThreadSnapshot(threads, currentId);
+    },
+    [applyThreadState, updateCurrentThreadSnapshot],
   );
 
   const applyPermissionsState = useCallback(
@@ -881,23 +918,48 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
           onStopped(event);
           return;
         case "thread_list":
-          applyThreadState(event.sessions, event.current_session_id);
+          if (Array.isArray(event.sessions)) {
+            const sid =
+              event.current_session_id ?? stateRef.current.currentSessionId;
+            const current = sid
+              ? event.sessions.find((item) => item.id === sid)
+              : undefined;
+            const nextCount = current?.message_count ?? 0;
+            const snapshot = currentThreadSnapshotRef.current;
+            const shouldAutoRefresh =
+              !!sid &&
+              snapshot.sessionId === sid &&
+              nextCount > snapshot.messageCount &&
+              !stateRef.current.isWaiting &&
+              stateRef.current.connectionState === "connected" &&
+              !autoRefreshSwitchInFlightRef.current;
+
+            if (shouldAutoRefresh) {
+              autoRefreshSwitchInFlightRef.current = true;
+              suppressAutoRefreshErrorRef.current = true;
+              sendControl({
+                type: "thread_switch",
+                session_id: sid,
+              });
+            }
+          }
+          applyThreadStateAndSnapshot(event.sessions, event.current_session_id);
           return;
         case "thread_created":
         case "thread_switched":
         case "thread_cleared":
         case "thread_deleted": {
+          autoRefreshSwitchInFlightRef.current = false;
+          suppressAutoRefreshErrorRef.current = false;
           const fallbackSessionId =
             "session_id" in event ? event.session_id : undefined;
-          applyThreadState(
-            event.sessions,
-            event.current_session_id ?? fallbackSessionId,
-          );
+          const nextSessionId = event.current_session_id ?? fallbackSessionId;
+          applyThreadStateAndSnapshot(event.sessions, nextSessionId);
           hydrateCurrentThread(event.history ?? []);
           return;
         }
         case "thread_renamed":
-          applyThreadState(event.sessions, event.current_session_id);
+          applyThreadStateAndSnapshot(event.sessions, event.current_session_id);
           return;
         case "permissions_state":
           applyPermissionsState(
@@ -913,13 +975,24 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
           applyMcpStatus(event.mcp);
           return;
         case "error":
+          if (suppressAutoRefreshErrorRef.current) {
+            const message = event.message ?? "";
+            if (
+              message.includes("Cannot modify threads while a run is active") ||
+              message.includes("A run is already active")
+            ) {
+              suppressAutoRefreshErrorRef.current = false;
+              autoRefreshSwitchInFlightRef.current = false;
+              return;
+            }
+          }
           onError(event.message ?? "Unknown error");
       }
     },
     [
       applyMcpStatus,
       applyPermissionsState,
-      applyThreadState,
+      applyThreadStateAndSnapshot,
       hydrateCurrentThread,
       onChunk,
       onDone,
@@ -929,6 +1002,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       onToolCallResult,
       onToolCallStart,
       onUserMessage,
+      sendControl,
     ],
   );
 
