@@ -5,6 +5,9 @@ watchexec = "latest"
 prek = "latest"
 prettier = "latest"
 
+[env]
+RUST_LOG = "rikabot=info,reqwest=warn,hyper_util=warn"
+
 [hooks]
 postinstall = '''
 prek install --overwrite

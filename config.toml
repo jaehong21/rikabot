@@ -28,6 +28,26 @@
 # api_key = "YOUR_OPENROUTER_API_KEY"
 # env_key = "OPENROUTER_API_KEY"
 
+# [web_fetch]
+# enabled = false
+# timeout_secs = 20
+# max_response_size = 50000
+# user_agent = "rikabot/0.1"
+
+# [web_search]
+# enabled = false
+# provider = "openrouter" # currently only openrouter is supported
+# max_results = 5
+# timeout_secs = 15
+# user_agent = "rikabot/0.1"
+
+# [web_search.providers.openrouter]
+# api_key = ""
+# env_key = "OPENROUTER_API_KEY"
+# model = "openai/gpt-4o-mini"
+# plugin_max_results = 5
+# plugin_search_prompt = ""
+
 # [skills]
 # enabled = true
 
@@ -41,6 +61,8 @@
 # [permissions.tools]
 # allow = [
 #   "filesystem_*(*)",
+#   "web_fetch(domain:docs.openclaw.ai)",
+#   "web_search(*)",
 #   "shell(command:cat *)",
 #   "shell(command:cd *)",
 #   "shell(command:chmod *)",

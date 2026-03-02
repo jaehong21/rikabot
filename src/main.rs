@@ -17,7 +17,7 @@ use tracing_subscriber::EnvFilter;
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env().add_directive("rikabot=info".parse()?))
+        .with_env_filter(EnvFilter::from_default_env())
         .init();
 
     let config = config::AppConfig::load(None)?;
@@ -40,7 +40,12 @@ async fn main() -> Result<()> {
     ));
 
     // Create tool registry with default tools anchored to workspace.
-    let tool_registry = tools::default_registry(&workspace_dir, permissions_engine.clone());
+    let tool_registry = tools::default_registry(
+        &workspace_dir,
+        permissions_engine.clone(),
+        &config.web_fetch,
+        &config.web_search,
+    );
     let mcp_runtime = Arc::new(mcp_runtime::McpRuntime::new(
         config.mcp.enabled,
         &config.mcp.servers,

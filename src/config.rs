@@ -25,6 +25,10 @@ pub struct AppConfig {
     #[serde(default)]
     pub permissions: PermissionsConfig,
     #[serde(default)]
+    pub web_fetch: WebFetchConfig,
+    #[serde(default)]
+    pub web_search: WebSearchConfig,
+    #[serde(default)]
     pub mcp: McpConfig,
 }
 
@@ -80,6 +84,95 @@ pub struct ToolPermissionsConfig {
     pub allow: Vec<String>,
     #[serde(default)]
     pub deny: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct WebFetchConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(alias = "timeout_seconds")]
+    #[serde(default = "default_web_fetch_timeout_secs")]
+    pub timeout_secs: u64,
+    #[serde(default = "default_web_fetch_max_response_size")]
+    pub max_response_size: usize,
+    #[serde(default = "default_web_fetch_user_agent")]
+    pub user_agent: String,
+}
+
+impl Default for WebFetchConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            timeout_secs: default_web_fetch_timeout_secs(),
+            max_response_size: default_web_fetch_max_response_size(),
+            user_agent: default_web_fetch_user_agent(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct WebSearchConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_web_search_provider")]
+    pub provider: String,
+    #[serde(default = "default_web_search_max_results")]
+    pub max_results: usize,
+    #[serde(alias = "timeout_seconds")]
+    #[serde(default = "default_web_search_timeout_secs")]
+    pub timeout_secs: u64,
+    #[serde(default = "default_web_search_user_agent")]
+    pub user_agent: String,
+    #[serde(default)]
+    pub providers: WebSearchProvidersConfig,
+}
+
+impl Default for WebSearchConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            provider: default_web_search_provider(),
+            max_results: default_web_search_max_results(),
+            timeout_secs: default_web_search_timeout_secs(),
+            user_agent: default_web_search_user_agent(),
+            providers: WebSearchProvidersConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct WebSearchProvidersConfig {
+    #[serde(default)]
+    pub openrouter: WebSearchOpenRouterConfig,
+}
+
+impl Default for WebSearchProvidersConfig {
+    fn default() -> Self {
+        Self {
+            openrouter: WebSearchOpenRouterConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct WebSearchOpenRouterConfig {
+    pub api_key: Option<String>,
+    pub env_key: Option<String>,
+    pub model: Option<String>,
+    pub plugin_max_results: Option<usize>,
+    pub plugin_search_prompt: Option<String>,
+}
+
+impl Default for WebSearchOpenRouterConfig {
+    fn default() -> Self {
+        Self {
+            api_key: None,
+            env_key: Some("OPENROUTER_API_KEY".to_string()),
+            model: Some("openai/gpt-4o-mini".to_string()),
+            plugin_max_results: Some(5),
+            plugin_search_prompt: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -262,6 +355,27 @@ fn default_mcp_enabled() -> bool {
 fn default_permissions_enabled() -> bool {
     true
 }
+fn default_web_fetch_timeout_secs() -> u64 {
+    20
+}
+fn default_web_fetch_max_response_size() -> usize {
+    50_000
+}
+fn default_web_fetch_user_agent() -> String {
+    "rikabot/0.1".to_string()
+}
+fn default_web_search_provider() -> String {
+    "openrouter".to_string()
+}
+fn default_web_search_max_results() -> usize {
+    5
+}
+fn default_web_search_timeout_secs() -> u64 {
+    15
+}
+fn default_web_search_user_agent() -> String {
+    "rikabot/0.1".to_string()
+}
 fn default_mcp_server_enabled() -> bool {
     true
 }
@@ -420,6 +534,72 @@ impl OpenRouterConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WebSearchProviderKind {
+    OpenRouter,
+}
+
+impl WebSearchConfig {
+    pub fn resolved_provider_kind(&self) -> Result<WebSearchProviderKind> {
+        match self.provider.trim().to_ascii_lowercase().as_str() {
+            "openrouter" => Ok(WebSearchProviderKind::OpenRouter),
+            other => anyhow::bail!(
+                "web_search provider '{}' is unsupported; expected 'openrouter'",
+                other
+            ),
+        }
+    }
+
+    pub fn resolved_max_results(&self) -> usize {
+        self.max_results.clamp(1, 10)
+    }
+}
+
+impl WebSearchOpenRouterConfig {
+    pub fn resolve_api_key(&self) -> Result<String> {
+        if let Some(key) = self
+            .api_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            return Ok(key.to_string());
+        }
+        if let Some(env) = self
+            .env_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            return std::env::var(env)
+                .map_err(|_| anyhow::anyhow!("env var '{}' not set for openrouter api_key", env));
+        }
+        anyhow::bail!("openrouter web_search requires api_key or env_key")
+    }
+
+    pub fn resolve_model(&self) -> Result<String> {
+        let model = self
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("openrouter web_search model cannot be empty"))?;
+        Ok(model.to_string())
+    }
+
+    pub fn resolved_plugin_max_results(&self) -> Option<usize> {
+        self.plugin_max_results.map(|v| v.clamp(1, 10))
+    }
+
+    pub fn resolved_plugin_search_prompt(&self) -> Option<String> {
+        self.plugin_search_prompt
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(ToString::to_string)
+    }
+}
+
 impl AppConfig {
     pub fn resolve_path(path: Option<&str>) -> Result<PathBuf> {
         if let Some(raw) = path {
@@ -443,6 +623,7 @@ impl AppConfig {
         let config: AppConfig = toml::from_str(&contents)
             .map_err(|e| anyhow::anyhow!("Failed to parse config: {}", e))?;
         config.mcp.validate()?;
+        config.validate()?;
 
         Ok(config)
     }
@@ -461,6 +642,26 @@ impl AppConfig {
             anyhow::anyhow!("workspace_dir could not be resolved from config or HOME")
         })?;
         Ok(home.join(".rika").join("workspace"))
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.web_fetch.timeout_secs == 0 {
+            anyhow::bail!("web_fetch timeout_secs must be greater than 0");
+        }
+        if self.web_fetch.max_response_size == 0 {
+            anyhow::bail!("web_fetch max_response_size must be greater than 0");
+        }
+        if self.web_search.timeout_secs == 0 {
+            anyhow::bail!("web_search timeout_secs must be greater than 0");
+        }
+        let _ = self.web_search.resolved_provider_kind()?;
+
+        if self.web_search.enabled {
+            let _ = self.web_search.providers.openrouter.resolve_api_key()?;
+            let _ = self.web_search.providers.openrouter.resolve_model()?;
+        }
+
+        Ok(())
     }
 }
 
@@ -928,5 +1129,125 @@ api_key = "x"
         assert!(cfg.enabled);
         assert!(cfg.tools.allow.is_empty());
         assert!(cfg.tools.deny.is_empty());
+    }
+
+    #[test]
+    fn web_configs_default_values_from_minimal_toml() {
+        let cfg: AppConfig = toml::from_str(
+            r#"
+provider = "openai"
+[providers.openai]
+api_key = "x"
+"#,
+        )
+        .expect("parse config");
+
+        assert!(!cfg.web_fetch.enabled);
+        assert_eq!(cfg.web_fetch.timeout_secs, 20);
+        assert_eq!(cfg.web_fetch.max_response_size, 50_000);
+        assert_eq!(cfg.web_fetch.user_agent, "rikabot/0.1");
+
+        assert!(!cfg.web_search.enabled);
+        assert_eq!(cfg.web_search.provider, "openrouter");
+        assert_eq!(cfg.web_search.max_results, 5);
+        assert_eq!(cfg.web_search.timeout_secs, 15);
+        assert_eq!(cfg.web_search.user_agent, "rikabot/0.1");
+        assert_eq!(
+            cfg.web_search.providers.openrouter.model.as_deref(),
+            Some("openai/gpt-4o-mini")
+        );
+    }
+
+    #[test]
+    fn web_search_validate_rejects_unknown_provider() {
+        let cfg: AppConfig = toml::from_str(
+            r#"
+provider = "openai"
+[providers.openai]
+api_key = "x"
+
+[web_search]
+enabled = true
+provider = "unknown"
+"#,
+        )
+        .expect("parse config");
+
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("web_search provider"));
+        assert!(err.contains("unsupported"));
+    }
+
+    #[test]
+    fn web_search_validate_rejects_perplexity_provider() {
+        let cfg: AppConfig = toml::from_str(
+            r#"
+provider = "openai"
+[providers.openai]
+api_key = "x"
+
+[web_search]
+enabled = true
+provider = "perplexity"
+"#,
+        )
+        .expect("parse config");
+
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("expected 'openrouter'"));
+    }
+
+    #[test]
+    fn web_search_validate_uses_env_key_for_openrouter() {
+        let env_name = "RIKABOT_TEST_WEB_SEARCH_OPENROUTER_KEY";
+        unsafe { std::env::set_var(env_name, "or-key") };
+
+        let cfg: AppConfig = toml::from_str(&format!(
+            r#"
+provider = "openai"
+[providers.openai]
+api_key = "x"
+
+[web_search]
+enabled = true
+provider = "openrouter"
+
+[web_search.providers.openrouter]
+env_key = "{env_name}"
+model = "openai/gpt-4o-mini"
+"#
+        ))
+        .expect("parse config");
+
+        assert!(cfg.validate().is_ok());
+        unsafe { std::env::remove_var(env_name) };
+    }
+
+    #[test]
+    fn web_search_resolved_max_results_clamps_to_range() {
+        let mut cfg = WebSearchConfig::default();
+        cfg.max_results = 0;
+        assert_eq!(cfg.resolved_max_results(), 1);
+        cfg.max_results = 42;
+        assert_eq!(cfg.resolved_max_results(), 10);
+    }
+
+    #[test]
+    fn web_search_accepts_timeout_seconds_alias() {
+        let cfg: AppConfig = toml::from_str(
+            r#"
+provider = "openai"
+[providers.openai]
+api_key = "x"
+
+[web_search]
+enabled = false
+provider = "openrouter"
+timeout_seconds = 20
+"#,
+        )
+        .expect("parse config");
+
+        assert_eq!(cfg.web_search.timeout_secs, 20);
     }
 }
