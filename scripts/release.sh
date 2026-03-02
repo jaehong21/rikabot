@@ -7,13 +7,14 @@ set -euo pipefail
 
 usage() {
 	cat <<'EOF'
-Usage: ./scripts/release.sh [--tag <tag>] [--skip-github] [--skip-cargo] [--dry-run]
+Usage: ./scripts/release.sh [--tag <tag>] [--notes-file <path>] [--skip-github] [--skip-cargo] [--dry-run]
 
 Options:
   --tag <tag>       Release tag to create (defaults to v<crate version> from Cargo.toml)
-  --allow-dirty     Permit running with uncommitted changes
+  --allow-dirty     Permit running with uncommitted changes (cargo publish always uses --allow-dirty)
   --skip-github     Skip creating/pushing GitHub release
   --skip-cargo      Skip cargo publish
+  --notes-file <path>   Override generated release notes path (default: ./release-notes-<tag>.md)
   --dry-run         Print commands without executing
   -h, --help        Show this message
 
@@ -27,6 +28,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 TAG_INPUT=""
+NOTES_FILE_PATH=""
 SKIP_GITHUB=0
 SKIP_CARGO=0
 DRY_RUN=0
@@ -36,6 +38,10 @@ while [[ $# -gt 0 ]]; do
 	case "$1" in
 		--tag)
 			TAG_INPUT="${2:-}"
+			shift 2
+			;;
+		--notes-file)
+			NOTES_FILE_PATH="${2:-}"
 			shift 2
 			;;
 		--allow-dirty)
@@ -128,6 +134,15 @@ if [[ "$SKIP_GITHUB" == "0" ]]; then
 fi
 
 echo "Preparing release ${RELEASE_TAG} (crate version: ${VERSION})"
+RELEASE_NOTES="${ROOT_DIR}/release-notes-${RELEASE_TAG}.md"
+if [[ -n "$NOTES_FILE_PATH" ]]; then
+	RELEASE_NOTES="$NOTES_FILE_PATH"
+fi
+
+if [[ -d "$RELEASE_NOTES" ]]; then
+	echo "Notes path is a directory: $RELEASE_NOTES" >&2
+	exit 1
+fi
 
 # Generate release notes from commits since previous version tag.
 LATEST_TAG=""
@@ -136,27 +151,43 @@ while IFS= read -r tag; do
 		LATEST_TAG="$tag"
 	fi
 done < <(git tag --list 'v*' --sort=version:refname)
-NOTES_FILE="$(mktemp)"
-trap 'rm -f "$NOTES_FILE"' EXIT
 
+RELEASE_CHANGES="$(mktemp)"
+trap 'rm -f "$RELEASE_CHANGES"' EXIT
 if [[ -n "$LATEST_TAG" ]]; then
-	git log --pretty=format:"- %s (%h)" "${LATEST_TAG}..HEAD" > "$NOTES_FILE"
+	git log --pretty=format:"- %s (%h)" "${LATEST_TAG}..HEAD" > "$RELEASE_CHANGES"
 else
-	git log --pretty=format:"- %s (%h)" --max-count=50 > "$NOTES_FILE"
+	git log --pretty=format:"- %s (%h)" --max-count=50 > "$RELEASE_CHANGES"
 fi
-if [[ ! -s "$NOTES_FILE" ]]; then
-	echo "Release notes for this tag are empty. Adding default note." > "$NOTES_FILE"
+
+if [[ -s "$RELEASE_CHANGES" ]]; then
+	{
+		echo "## What's Changed"
+		echo
+		cat "$RELEASE_CHANGES"
+	} > "$RELEASE_NOTES"
+else
+	cat > "$RELEASE_NOTES" <<EOF
+# Release ${RELEASE_TAG}
+
+- Version: ${VERSION}
+- Previous tag: ${LATEST_TAG:-none}
+
+## Changes
+- No git changes since previous release.
+EOF
 fi
+echo "Release notes written to: ${RELEASE_NOTES}"
 
 if [[ "$SKIP_GITHUB" == "0" ]]; then
 	run gh auth status
 	run git tag "$RELEASE_TAG" -m "Release ${RELEASE_TAG}"
 	run git push origin "$RELEASE_TAG"
-	run gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --notes-file "$NOTES_FILE"
+	run gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --notes-file "$RELEASE_NOTES"
 fi
 
 if [[ "$SKIP_CARGO" == "0" ]]; then
-	run cargo publish --locked
+	run cargo publish --locked --allow-dirty
 fi
 
 echo "Release workflow complete for ${RELEASE_TAG}."
