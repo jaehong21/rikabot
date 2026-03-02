@@ -11,6 +11,7 @@ Usage: ./scripts/release.sh [--tag <tag>] [--skip-github] [--skip-cargo] [--dry-
 
 Options:
   --tag <tag>       Release tag to create (defaults to v<crate version> from Cargo.toml)
+  --allow-dirty     Permit running with uncommitted changes
   --skip-github     Skip creating/pushing GitHub release
   --skip-cargo      Skip cargo publish
   --dry-run         Print commands without executing
@@ -29,12 +30,17 @@ TAG_INPUT=""
 SKIP_GITHUB=0
 SKIP_CARGO=0
 DRY_RUN=0
+ALLOW_DIRTY=0
 
 while [[ $# -gt 0 ]]; do
 	case "$1" in
 		--tag)
 			TAG_INPUT="${2:-}"
 			shift 2
+			;;
+		--allow-dirty)
+			ALLOW_DIRTY=1
+			shift
 			;;
 		--skip-github)
 			SKIP_GITHUB=1
@@ -78,14 +84,13 @@ run() {
 
 require_cmd git
 require_cmd cargo
-require_cmd gh
 
 if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
 	echo "Not a git repository: $ROOT_DIR" >&2
 	exit 1
 fi
 
-if [[ -n "$(git status --short)" ]]; then
+if [[ "$ALLOW_DIRTY" == "0" && -n "$(git status --short)" ]]; then
 	echo "Working tree is dirty. Commit or stash changes first." >&2
 	exit 1
 fi
@@ -125,7 +130,12 @@ fi
 echo "Preparing release ${RELEASE_TAG} (crate version: ${VERSION})"
 
 # Generate release notes from commits since previous version tag.
-LATEST_TAG="$(git tag --list 'v*' --sort=version:refname | grep -v "^${RELEASE_TAG}$" | tail -n 1)"
+LATEST_TAG=""
+while IFS= read -r tag; do
+	if [[ "$tag" != "$RELEASE_TAG" ]]; then
+		LATEST_TAG="$tag"
+	fi
+done < <(git tag --list 'v*' --sort=version:refname)
 NOTES_FILE="$(mktemp)"
 trap 'rm -f "$NOTES_FILE"' EXIT
 
