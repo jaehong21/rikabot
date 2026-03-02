@@ -28,6 +28,20 @@
 # api_key = "YOUR_OPENROUTER_API_KEY"
 # env_key = "OPENROUTER_API_KEY"
 
+# [shell]
+# enabled = true
+# timeout_secs = 30
+# max_output_bytes = 10000
+
+# [process]
+# enabled = true
+# max_concurrent = 8
+# max_output_bytes = 524288
+# cleanup_retention_secs = 600
+# kill_grace_secs = 5
+# wait_default_secs = 20
+# wait_max_secs = 25
+
 # [web_fetch]
 # enabled = false
 # timeout_secs = 20

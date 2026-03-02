@@ -382,6 +382,8 @@ async fn run_server(config_arg: Option<&str>) -> Result<()> {
     let tool_registry = tools::default_registry(
         &workspace_dir,
         permissions_engine.clone(),
+        &config.shell,
+        &config.process,
         &config.web_fetch,
         &config.web_search,
     );

@@ -10,22 +10,39 @@ use tokio::process::Command;
 /// to prevent memory issues.
 pub struct ShellTool {
     timeout_secs: u64,
+    max_output_bytes: usize,
     workspace_dir: Option<PathBuf>,
 }
 
 impl ShellTool {
     /// Create a new ShellTool with the given timeout in seconds.
     pub fn new(timeout_secs: u64) -> Self {
+        Self::with_limits(timeout_secs, 10_000)
+    }
+
+    /// Create a new ShellTool with timeout and output limit.
+    pub fn with_limits(timeout_secs: u64, max_output_bytes: usize) -> Self {
         Self {
             timeout_secs,
+            max_output_bytes,
             workspace_dir: None,
         }
     }
 
     /// Create a ShellTool anchored to a workspace directory.
     pub fn with_workspace_dir(timeout_secs: u64, workspace_dir: PathBuf) -> Self {
+        Self::with_workspace_dir_and_limits(timeout_secs, 10_000, workspace_dir)
+    }
+
+    /// Create a ShellTool anchored to a workspace directory with explicit output limit.
+    pub fn with_workspace_dir_and_limits(
+        timeout_secs: u64,
+        max_output_bytes: usize,
+        workspace_dir: PathBuf,
+    ) -> Self {
         Self {
             timeout_secs,
+            max_output_bytes,
             workspace_dir: Some(workspace_dir),
         }
     }
@@ -84,10 +101,10 @@ impl Tool for ShellTool {
                 };
 
                 // Truncate very long output to prevent memory issues.
-                let truncated = if combined.len() > 10_000 {
+                let truncated = if combined.len() > self.max_output_bytes {
                     format!(
                         "{}...\n[output truncated, {} bytes total]",
-                        &combined[..10_000],
+                        &combined[..self.max_output_bytes],
                         combined.len()
                     )
                 } else {
@@ -251,5 +268,32 @@ mod tests {
         assert_eq!(actual, expected);
 
         let _ = tokio::fs::remove_dir_all(workspace).await;
+    }
+
+    #[tokio::test]
+    async fn shell_timeout_message_uses_configured_value() {
+        let tool = ShellTool::new(1);
+        let result = tool
+            .execute(serde_json::json!({"command": "sleep 2"}))
+            .await
+            .expect("timeout should return tool result");
+
+        assert!(!result.success);
+        let error = result.error.unwrap_or_default();
+        assert!(error.contains("timed out after 1 seconds"));
+    }
+
+    #[tokio::test]
+    async fn shell_respects_custom_output_limit() {
+        let tool = ShellTool::with_limits(30, 32);
+        let result = tool
+            .execute(serde_json::json!({
+                "command": "printf 'abcdefghijklmnopqrstuvwxyz0123456789'"
+            }))
+            .await
+            .expect("printf should succeed");
+
+        assert!(result.success);
+        assert!(result.output.contains("[output truncated"));
     }
 }

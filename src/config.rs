@@ -25,6 +25,10 @@ pub struct AppConfig {
     #[serde(default)]
     pub permissions: PermissionsConfig,
     #[serde(default)]
+    pub shell: ShellConfig,
+    #[serde(default)]
+    pub process: ProcessConfig,
+    #[serde(default)]
     pub web_fetch: WebFetchConfig,
     #[serde(default)]
     pub web_search: WebSearchConfig,
@@ -84,6 +88,59 @@ pub struct ToolPermissionsConfig {
     pub allow: Vec<String>,
     #[serde(default)]
     pub deny: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ShellConfig {
+    #[serde(default = "default_shell_enabled")]
+    pub enabled: bool,
+    #[serde(alias = "timeout_seconds")]
+    #[serde(default = "default_shell_timeout_secs")]
+    pub timeout_secs: u64,
+    #[serde(default = "default_shell_max_output_bytes")]
+    pub max_output_bytes: usize,
+}
+
+impl Default for ShellConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_shell_enabled(),
+            timeout_secs: default_shell_timeout_secs(),
+            max_output_bytes: default_shell_max_output_bytes(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProcessConfig {
+    #[serde(default = "default_process_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_process_max_concurrent")]
+    pub max_concurrent: usize,
+    #[serde(default = "default_process_max_output_bytes")]
+    pub max_output_bytes: usize,
+    #[serde(default = "default_process_cleanup_retention_secs")]
+    pub cleanup_retention_secs: u64,
+    #[serde(default = "default_process_kill_grace_secs")]
+    pub kill_grace_secs: u64,
+    #[serde(default = "default_process_wait_default_secs")]
+    pub wait_default_secs: u64,
+    #[serde(default = "default_process_wait_max_secs")]
+    pub wait_max_secs: u64,
+}
+
+impl Default for ProcessConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_process_enabled(),
+            max_concurrent: default_process_max_concurrent(),
+            max_output_bytes: default_process_max_output_bytes(),
+            cleanup_retention_secs: default_process_cleanup_retention_secs(),
+            kill_grace_secs: default_process_kill_grace_secs(),
+            wait_default_secs: default_process_wait_default_secs(),
+            wait_max_secs: default_process_wait_max_secs(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -355,6 +412,42 @@ fn default_mcp_enabled() -> bool {
 fn default_permissions_enabled() -> bool {
     true
 }
+fn default_shell_enabled() -> bool {
+    true
+}
+fn default_shell_timeout_secs() -> u64 {
+    30
+}
+fn max_shell_timeout_secs() -> u64 {
+    3_600
+}
+fn default_shell_max_output_bytes() -> usize {
+    10_000
+}
+fn default_process_enabled() -> bool {
+    true
+}
+fn default_process_max_concurrent() -> usize {
+    8
+}
+fn max_process_max_concurrent() -> usize {
+    128
+}
+fn default_process_max_output_bytes() -> usize {
+    524_288
+}
+fn default_process_cleanup_retention_secs() -> u64 {
+    600
+}
+fn default_process_kill_grace_secs() -> u64 {
+    5
+}
+fn default_process_wait_default_secs() -> u64 {
+    20
+}
+fn default_process_wait_max_secs() -> u64 {
+    25
+}
 fn default_web_fetch_timeout_secs() -> u64 {
     20
 }
@@ -600,6 +693,18 @@ impl WebSearchOpenRouterConfig {
     }
 }
 
+impl ShellConfig {
+    pub fn resolved_timeout_secs(&self) -> u64 {
+        self.timeout_secs.min(max_shell_timeout_secs())
+    }
+}
+
+impl ProcessConfig {
+    pub fn resolved_max_concurrent(&self) -> usize {
+        self.max_concurrent.min(max_process_max_concurrent())
+    }
+}
+
 impl AppConfig {
     pub fn resolve_path(path: Option<&str>) -> Result<PathBuf> {
         if let Some(raw) = path {
@@ -645,6 +750,34 @@ impl AppConfig {
     }
 
     pub fn validate(&self) -> Result<()> {
+        if self.shell.timeout_secs == 0 {
+            anyhow::bail!("shell timeout_secs must be greater than 0");
+        }
+        if self.shell.max_output_bytes == 0 {
+            anyhow::bail!("shell max_output_bytes must be greater than 0");
+        }
+        if self.process.max_concurrent == 0 {
+            anyhow::bail!("process max_concurrent must be greater than 0");
+        }
+        if self.process.max_output_bytes == 0 {
+            anyhow::bail!("process max_output_bytes must be greater than 0");
+        }
+        if self.process.cleanup_retention_secs == 0 {
+            anyhow::bail!("process cleanup_retention_secs must be greater than 0");
+        }
+        if self.process.kill_grace_secs == 0 {
+            anyhow::bail!("process kill_grace_secs must be greater than 0");
+        }
+        if self.process.wait_default_secs == 0 {
+            anyhow::bail!("process wait_default_secs must be greater than 0");
+        }
+        if self.process.wait_max_secs == 0 {
+            anyhow::bail!("process wait_max_secs must be greater than 0");
+        }
+        if self.process.wait_default_secs > self.process.wait_max_secs {
+            anyhow::bail!("process wait_default_secs must be less than or equal to wait_max_secs");
+        }
+
         if self.web_fetch.timeout_secs == 0 {
             anyhow::bail!("web_fetch timeout_secs must be greater than 0");
         }
@@ -1249,5 +1382,90 @@ timeout_seconds = 20
         .expect("parse config");
 
         assert_eq!(cfg.web_search.timeout_secs, 20);
+    }
+
+    #[test]
+    fn shell_and_process_defaults_from_minimal_toml() {
+        let cfg: AppConfig = toml::from_str(
+            r#"
+provider = "openai"
+[providers.openai]
+api_key = "x"
+"#,
+        )
+        .expect("parse config");
+
+        assert!(cfg.shell.enabled);
+        assert_eq!(cfg.shell.timeout_secs, 30);
+        assert_eq!(cfg.shell.max_output_bytes, 10_000);
+
+        assert!(cfg.process.enabled);
+        assert_eq!(cfg.process.max_concurrent, 8);
+        assert_eq!(cfg.process.max_output_bytes, 524_288);
+        assert_eq!(cfg.process.cleanup_retention_secs, 600);
+        assert_eq!(cfg.process.kill_grace_secs, 5);
+        assert_eq!(cfg.process.wait_default_secs, 20);
+        assert_eq!(cfg.process.wait_max_secs, 25);
+    }
+
+    #[test]
+    fn shell_accepts_timeout_seconds_alias() {
+        let cfg: AppConfig = toml::from_str(
+            r#"
+provider = "openai"
+[providers.openai]
+api_key = "x"
+
+[shell]
+timeout_seconds = 42
+"#,
+        )
+        .expect("parse config");
+
+        assert_eq!(cfg.shell.timeout_secs, 42);
+    }
+
+    #[test]
+    fn shell_resolved_timeout_is_capped() {
+        let cfg = ShellConfig {
+            enabled: true,
+            timeout_secs: 9_999,
+            max_output_bytes: 10_000,
+        };
+        assert_eq!(cfg.resolved_timeout_secs(), 3_600);
+    }
+
+    #[test]
+    fn process_resolved_max_concurrent_is_capped() {
+        let cfg = ProcessConfig {
+            enabled: true,
+            max_concurrent: 9_999,
+            max_output_bytes: 524_288,
+            cleanup_retention_secs: 600,
+            kill_grace_secs: 5,
+            wait_default_secs: 20,
+            wait_max_secs: 25,
+        };
+        assert_eq!(cfg.resolved_max_concurrent(), 128);
+    }
+
+    #[test]
+    fn validate_rejects_process_wait_default_above_wait_max() {
+        let cfg: AppConfig = toml::from_str(
+            r#"
+provider = "openai"
+[providers.openai]
+api_key = "x"
+
+[process]
+wait_default_secs = 30
+wait_max_secs = 20
+"#,
+        )
+        .expect("parse config");
+
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("wait_default_secs"));
+        assert!(err.contains("less than or equal to wait_max_secs"));
     }
 }

@@ -17,6 +17,7 @@ pub mod mcp_oauth;
 pub mod mcp_protocol;
 pub mod mcp_tool;
 pub mod mcp_transport;
+pub mod process;
 pub mod shell;
 pub mod web_fetch;
 pub mod web_search;
@@ -240,18 +241,29 @@ impl ToolRegistry {
 
 // ── Default registry ────────────────────────────────────────────────────────
 
-/// Create a ToolRegistry pre-loaded with the default tools (shell).
+/// Create a ToolRegistry pre-loaded with the default tools.
 pub fn default_registry(
     workspace_dir: &Path,
     permission_engine: Arc<TokioRwLock<PermissionEngine>>,
+    shell_cfg: &crate::config::ShellConfig,
+    process_cfg: &crate::config::ProcessConfig,
     web_fetch_cfg: &crate::config::WebFetchConfig,
     web_search_cfg: &crate::config::WebSearchConfig,
 ) -> ToolRegistry {
     let mut registry = ToolRegistry::with_permission_engine(permission_engine);
-    registry.register(Box::new(shell::ShellTool::with_workspace_dir(
-        30,
-        workspace_dir.to_path_buf(),
-    ))); // 30 second timeout
+    if shell_cfg.enabled {
+        registry.register(Box::new(shell::ShellTool::with_workspace_dir_and_limits(
+            shell_cfg.resolved_timeout_secs(),
+            shell_cfg.max_output_bytes,
+            workspace_dir.to_path_buf(),
+        )));
+    }
+    if process_cfg.enabled {
+        registry.register(Box::new(process::ProcessTool::with_workspace_dir(
+            process_cfg.clone(),
+            workspace_dir.to_path_buf(),
+        )));
+    }
     registry.register(Box::new(
         filesystem_read::FilesystemReadTool::with_workspace_dir(workspace_dir.to_path_buf()),
     ));
@@ -306,7 +318,8 @@ fn enrich_args_for_permissions(name: &str, args: &serde_json::Value) -> serde_js
 mod tests {
     use super::*;
     use crate::config::{
-        PermissionsConfig, ToolPermissionsConfig, WebFetchConfig, WebSearchConfig,
+        PermissionsConfig, ProcessConfig, ShellConfig, ToolPermissionsConfig, WebFetchConfig,
+        WebSearchConfig,
     };
 
     #[test]
@@ -360,6 +373,36 @@ mod tests {
         assert!(!denied.allowed);
     }
 
+    #[test]
+    fn permission_engine_matches_process_spawn_selector() {
+        let permission_cfg = PermissionsConfig {
+            enabled: true,
+            tools: ToolPermissionsConfig {
+                allow: vec!["process(action:spawn,command:codex exec *)".to_string()],
+                deny: vec![],
+            },
+        };
+        let engine = PermissionEngine::from_config(&permission_cfg).unwrap();
+
+        let allowed = engine.evaluate(
+            "process",
+            &serde_json::json!({
+                "action": "spawn",
+                "command": "codex exec implement feature x"
+            }),
+        );
+        let denied = engine.evaluate(
+            "process",
+            &serde_json::json!({
+                "action": "spawn",
+                "command": "sleep 30"
+            }),
+        );
+
+        assert!(allowed.allowed);
+        assert!(!denied.allowed);
+    }
+
     #[tokio::test]
     async fn default_registry_registers_web_tools_only_when_enabled() {
         let permission_engine = Arc::new(TokioRwLock::new(PermissionEngine::disabled_allow_all()));
@@ -368,6 +411,11 @@ mod tests {
         let disabled = default_registry(
             &workspace,
             permission_engine.clone(),
+            &ShellConfig::default(),
+            &ProcessConfig {
+                enabled: false,
+                ..ProcessConfig::default()
+            },
             &WebFetchConfig {
                 enabled: false,
                 ..WebFetchConfig::default()
@@ -378,12 +426,19 @@ mod tests {
             },
         );
         let disabled_specs = disabled.specs();
+        assert!(disabled_specs.iter().any(|s| s.name == "shell"));
+        assert!(!disabled_specs.iter().any(|s| s.name == "process"));
         assert!(!disabled_specs.iter().any(|s| s.name == "web_fetch"));
         assert!(!disabled_specs.iter().any(|s| s.name == "web_search"));
 
         let enabled = default_registry(
             &workspace,
             permission_engine,
+            &ShellConfig::default(),
+            &ProcessConfig {
+                enabled: true,
+                ..ProcessConfig::default()
+            },
             &WebFetchConfig {
                 enabled: true,
                 ..WebFetchConfig::default()
@@ -394,6 +449,7 @@ mod tests {
             },
         );
         let enabled_specs = enabled.specs();
+        assert!(enabled_specs.iter().any(|s| s.name == "process"));
         assert!(enabled_specs.iter().any(|s| s.name == "web_fetch"));
         assert!(enabled_specs.iter().any(|s| s.name == "web_search"));
     }
