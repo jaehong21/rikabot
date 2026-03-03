@@ -21,10 +21,17 @@ pub enum McpServerState {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct McpToolStatus {
+    pub name: String,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct McpServerStatus {
     pub name: String,
     pub state: McpServerState,
     pub tool_count: usize,
+    pub tools: Vec<McpToolStatus>,
     pub error: Option<String>,
 }
 
@@ -64,6 +71,7 @@ impl McpRuntime {
                     name: server.name.clone(),
                     state,
                     tool_count: 0,
+                    tools: Vec::new(),
                     error: None,
                 },
             );
@@ -126,14 +134,34 @@ impl McpRuntime {
         let mut attempt: u32 = 0;
 
         loop {
-            self.set_status(&config.name, McpServerState::Connecting, 0, None);
+            self.set_status(
+                &config.name,
+                McpServerState::Connecting,
+                0,
+                Vec::new(),
+                None,
+            );
 
             match McpServer::connect(config.clone(), &workspace_dir).await {
                 Ok(server) => {
+                    let tools = server.tools().await;
+                    let tool_statuses: Vec<McpToolStatus> = tools
+                        .iter()
+                        .map(|tool| McpToolStatus {
+                            name: tool.name.clone(),
+                            description: tool.description.clone(),
+                        })
+                        .collect();
                     let registry = Arc::new(McpRegistry::from_server(&config.name, server).await);
                     match tool_registry.register_mcp_tools(registry).await {
                         Ok(added) => {
-                            self.set_status(&config.name, McpServerState::Ready, added, None);
+                            self.set_status(
+                                &config.name,
+                                McpServerState::Ready,
+                                added,
+                                tool_statuses,
+                                None,
+                            );
                             tracing::info!(
                                 "MCP server `{}` ready ({} tool{})",
                                 config.name,
@@ -150,6 +178,7 @@ impl McpRuntime {
                                 &config.name,
                                 McpServerState::Failed,
                                 0,
+                                Vec::new(),
                                 Some(message.clone()),
                             );
                             tracing::error!("{}", message);
@@ -163,6 +192,7 @@ impl McpRuntime {
                         &config.name,
                         McpServerState::Failed,
                         0,
+                        Vec::new(),
                         Some(message.clone()),
                     );
                     tracing::warn!(
@@ -189,6 +219,7 @@ impl McpRuntime {
         name: &str,
         state: McpServerState,
         tool_count: usize,
+        tools: Vec<McpToolStatus>,
         error: Option<String>,
     ) {
         let snapshot = {
@@ -204,10 +235,12 @@ impl McpRuntime {
                 name: name.to_string(),
                 state: McpServerState::Pending,
                 tool_count: 0,
+                tools: Vec::new(),
                 error: None,
             });
             entry.state = state;
             entry.tool_count = tool_count;
+            entry.tools = tools;
             entry.error = error;
 
             build_snapshot(self.inner.enabled, &self.inner.order, &statuses)

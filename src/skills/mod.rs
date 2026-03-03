@@ -1,5 +1,8 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+use anyhow::{anyhow, Context, Result};
+use serde::Serialize;
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -37,6 +40,22 @@ pub struct Skill {
     pub source: SkillSource,
     /// Whether all requirements are met.
     pub available: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SkillStatus {
+    pub name: String,
+    pub description: String,
+    pub always: bool,
+    pub available: bool,
+    pub path: String,
+    pub missing: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SkillsStatusSnapshot {
+    pub enabled: bool,
+    pub skills: Vec<SkillStatus>,
 }
 
 // ── SkillsLoader ────────────────────────────────────────────────────────────
@@ -183,6 +202,123 @@ impl SkillsLoader {
     }
 }
 
+pub fn build_skills_status_snapshot(skills_dir: &Path, enabled: bool) -> SkillsStatusSnapshot {
+    if !enabled {
+        return SkillsStatusSnapshot {
+            enabled: false,
+            skills: Vec::new(),
+        };
+    }
+
+    let loader = SkillsLoader::new(Some(skills_dir.to_path_buf()));
+    let skills = loader.load_all();
+    let mut statuses: Vec<SkillStatus> = skills
+        .into_iter()
+        .map(|skill| {
+            let path = match &skill.source {
+                SkillSource::Workspace(path) => path.display().to_string(),
+            };
+            SkillStatus {
+                name: skill.meta.name.clone(),
+                description: skill.meta.description.clone(),
+                always: skill.meta.always,
+                available: skill.available,
+                path,
+                missing: missing_requirements(&skill.meta),
+            }
+        })
+        .collect();
+    statuses.sort_by(|a, b| a.name.cmp(&b.name));
+
+    SkillsStatusSnapshot {
+        enabled: true,
+        skills: statuses,
+    }
+}
+
+pub fn read_skill_file(skills_dir: &Path, raw_path: &str) -> Result<(PathBuf, String)> {
+    let path = resolve_workspace_skill_path(skills_dir, raw_path)?;
+    let content = std::fs::read_to_string(&path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    Ok((path, content))
+}
+
+pub fn write_skill_file(skills_dir: &Path, raw_path: &str, content: &str) -> Result<PathBuf> {
+    if content.trim().is_empty() {
+        return Err(anyhow!("skill content cannot be empty"));
+    }
+
+    let (meta, _body) = parse_frontmatter(content).ok_or_else(|| {
+        anyhow!("invalid SKILL.md frontmatter: expected YAML with name and description")
+    })?;
+    if meta.name.trim().is_empty() {
+        return Err(anyhow!("skill frontmatter field `name` is required"));
+    }
+    if meta.description.trim().is_empty() {
+        return Err(anyhow!("skill frontmatter field `description` is required"));
+    }
+
+    let path = resolve_workspace_skill_path(skills_dir, raw_path)?;
+    let tmp_path = path.with_extension("tmp");
+    std::fs::write(&tmp_path, content)
+        .with_context(|| format!("failed to write temp skill file {}", tmp_path.display()))?;
+    std::fs::rename(&tmp_path, &path).with_context(|| {
+        format!(
+            "failed to replace skill file {} with {}",
+            path.display(),
+            tmp_path.display()
+        )
+    })?;
+    Ok(path)
+}
+
+fn resolve_workspace_skill_path(skills_dir: &Path, raw_path: &str) -> Result<PathBuf> {
+    let trimmed = raw_path.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow!("missing required field 'path'"));
+    }
+
+    std::fs::create_dir_all(skills_dir)
+        .with_context(|| format!("failed to ensure skills dir {}", skills_dir.display()))?;
+    let canonical_skills_dir = skills_dir
+        .canonicalize()
+        .with_context(|| format!("failed to canonicalize skills dir {}", skills_dir.display()))?;
+
+    let requested = PathBuf::from(trimmed);
+    let absolute = if requested.is_absolute() {
+        requested
+    } else {
+        canonical_skills_dir.join(requested)
+    };
+
+    if absolute
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        != "SKILL.md"
+    {
+        return Err(anyhow!("only SKILL.md files can be edited"));
+    }
+
+    let parent = absolute
+        .parent()
+        .ok_or_else(|| anyhow!("invalid skill path: missing parent directory"))?;
+    let canonical_parent = parent.canonicalize().with_context(|| {
+        format!(
+            "skill directory does not exist or is not accessible: {}",
+            parent.display()
+        )
+    })?;
+
+    if !canonical_parent.starts_with(&canonical_skills_dir) {
+        return Err(anyhow!(
+            "skill path must remain under workspace skills directory"
+        ));
+    }
+
+    Ok(canonical_parent.join("SKILL.md"))
+}
+
 // ── Parsing helpers ─────────────────────────────────────────────────────────
 
 /// Parse a SKILL.md file's content into a Skill.
@@ -322,6 +458,21 @@ fn check_requirements(reqs: &SkillRequirements) -> bool {
     true
 }
 
+fn missing_requirements(meta: &SkillMeta) -> Vec<String> {
+    let mut missing = Vec::new();
+    for bin in &meta.requires.bins {
+        if !which(bin) {
+            missing.push(format!("bin:{}", bin));
+        }
+    }
+    for env in &meta.requires.env {
+        if std::env::var(env).is_err() {
+            missing.push(format!("env:{}", env));
+        }
+    }
+    missing
+}
+
 /// Check if a binary is available on PATH.
 fn which(binary: &str) -> bool {
     std::env::var_os("PATH")
@@ -339,6 +490,7 @@ fn which(binary: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn make_temp_skills_dir(name: &str) -> PathBuf {
@@ -520,5 +672,93 @@ always: false
         assert!(!prompt.contains("cat <path>"));
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_build_skills_status_snapshot_includes_missing_requirements() {
+        let tmp = make_temp_skills_dir("skills_snapshot");
+        let skill_dir = tmp.join("requires-missing");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            r#"---
+name: needs-stuff
+description: "Needs missing dependencies"
+always: false
+requires:
+  bins: ["definitely_missing_binary_123"]
+  env: ["DEFINITELY_MISSING_ENV_123"]
+---
+
+# Needs Stuff
+"#,
+        )
+        .unwrap();
+
+        let snapshot = build_skills_status_snapshot(&tmp, true);
+        assert!(snapshot.enabled);
+        assert_eq!(snapshot.skills.len(), 1);
+        let skill = &snapshot.skills[0];
+        assert_eq!(skill.name, "needs-stuff");
+        assert!(!skill.available);
+        assert!(skill.missing.iter().any(|m| m.starts_with("bin:")));
+        assert!(skill.missing.iter().any(|m| m.starts_with("env:")));
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_write_skill_file_rejects_path_outside_skills_dir() {
+        let tmp = make_temp_skills_dir("reject_outside");
+        let skills = tmp.join("skills");
+        let outside = tmp.join("outside");
+        fs::create_dir_all(&skills).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+
+        let content = r#"---
+name: test
+description: "desc"
+---
+
+# Test
+"#;
+
+        let outside_path = outside.join("SKILL.md");
+        let err = write_skill_file(&skills, outside_path.to_str().unwrap(), content)
+            .expect_err("outside path should be rejected");
+        assert!(err.to_string().contains("workspace skills directory"));
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_write_and_read_skill_file_roundtrip() {
+        let tmp = make_temp_skills_dir("roundtrip");
+        let skills = tmp.join("skills");
+        let skill_dir = skills.join("demo");
+        fs::create_dir_all(&skill_dir).unwrap();
+
+        let content = r#"---
+name: demo
+description: "Demo skill"
+---
+
+# Demo
+"#;
+
+        let written = write_skill_file(
+            &skills,
+            skill_dir.join("SKILL.md").to_str().unwrap(),
+            content,
+        )
+        .expect("write should succeed");
+        assert!(written.ends_with("SKILL.md"));
+
+        let (read_path, read_content) =
+            read_skill_file(&skills, written.to_str().unwrap()).expect("read should succeed");
+        assert_eq!(read_path, written);
+        assert_eq!(read_content, content);
+
+        let _ = fs::remove_dir_all(&tmp);
     }
 }

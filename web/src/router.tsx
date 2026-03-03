@@ -9,6 +9,32 @@ import { ChatPage } from "@/routes/chat-page";
 import { SettingsPage } from "@/routes/settings-page";
 import { ThreadsPage } from "@/routes/threads-page";
 
+export const SETTINGS_SECTION_IDS = [
+  "general",
+  "permissions",
+  "skills",
+  "mcp",
+] as const;
+
+export type SettingsSectionId = (typeof SETTINGS_SECTION_IDS)[number];
+
+export type SettingsSearch = {
+  section?: SettingsSectionId;
+};
+
+function normalizeSettingsSearch(
+  search: Record<string, unknown>,
+): SettingsSearch {
+  const section = search.section;
+  if (
+    typeof section === "string" &&
+    SETTINGS_SECTION_IDS.includes(section as SettingsSectionId)
+  ) {
+    return { section: section as SettingsSectionId };
+  }
+  return {};
+}
+
 const rootRoute = createRootRoute({
   component: AppShell,
 });
@@ -22,6 +48,7 @@ const chatRoute = createRoute({
 const settingsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/settings",
+  validateSearch: normalizeSettingsSearch,
   component: SettingsPage,
 });
 

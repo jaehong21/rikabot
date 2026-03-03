@@ -80,16 +80,36 @@ export type McpServerState =
   | "failed"
   | "disabled";
 
+export type McpToolStatus = {
+  name: string;
+  description?: string | null;
+};
+
 export type McpServerStatus = {
   name: string;
   state: McpServerState;
   tool_count?: number;
+  tools?: McpToolStatus[];
   error?: string | null;
 };
 
 export type McpStatusSnapshot = {
   enabled?: boolean;
   servers?: McpServerStatus[];
+};
+
+export type SkillStatus = {
+  name: string;
+  description: string;
+  always: boolean;
+  available: boolean;
+  path: string;
+  missing?: string[];
+};
+
+export type SkillsStatusSnapshot = {
+  enabled?: boolean;
+  skills?: SkillStatus[];
 };
 
 export type DoneEvent = {
@@ -195,4 +215,14 @@ export type ServerEvent =
   | {
       type: "mcp_status";
       mcp?: McpStatusSnapshot;
+    }
+  | {
+      type: "skills_status";
+      skills?: SkillsStatusSnapshot;
+      validation_errors?: string[];
+    }
+  | {
+      type: "skill_content";
+      path?: string;
+      content?: string;
     };

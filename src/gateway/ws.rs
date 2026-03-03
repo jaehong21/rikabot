@@ -21,6 +21,7 @@ use crate::mcp_runtime::McpStatusSnapshot;
 use crate::permissions::PermissionEngine;
 use crate::prompt::SessionPromptContext;
 use crate::providers::ChatMessage;
+use crate::skills;
 
 /// Inbound message from the client.
 #[derive(Debug, Clone, Deserialize)]
@@ -45,6 +46,8 @@ struct ClientMessage {
     decision: Option<ToolApprovalDecisionKind>,
     #[serde(default)]
     allow_rule: Option<String>,
+    #[serde(default)]
+    path: Option<String>,
 }
 
 struct RunOutcome {
@@ -101,6 +104,12 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                 return;
             }
             if send_mcp_status(&mut ws_sink, state.mcp_runtime.snapshot())
+                .await
+                .is_err()
+            {
+                return;
+            }
+            if send_skills_status(&mut ws_sink, &state, None)
                 .await
                 .is_err()
             {
@@ -214,6 +223,30 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                         if let Err(err) = send_permissions_state(&mut ws_sink, &state, None).await {
                             tracing::debug!("Failed to send permissions state: {}", err);
                             break;
+                        }
+                    }
+                    "skills_get" => {
+                        if let Err(err) = send_skills_status(&mut ws_sink, &state, None).await {
+                            tracing::debug!("Failed to send skills status: {}", err);
+                            break;
+                        }
+                    }
+                    "skills_read" => {
+                        if let Err(err) = handle_skills_read(&state, &client_msg, &mut ws_sink).await {
+                            let _ = send_error(
+                                &mut ws_sink,
+                                &format!("Failed to load skill content: {}", err),
+                            )
+                            .await;
+                        }
+                    }
+                    "skills_set" => {
+                        if let Err(err) = handle_skills_set(&state, &client_msg, &mut ws_sink).await {
+                            let _ = send_error(
+                                &mut ws_sink,
+                                &format!("Failed to update skill: {}", err),
+                            )
+                            .await;
                         }
                     }
                     "permissions_set" => {
@@ -846,6 +879,81 @@ async fn send_mcp_status(
         .map_err(Into::into)
 }
 
+async fn send_skills_status(
+    ws_sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    state: &AppState,
+    validation_errors: Option<Vec<String>>,
+) -> anyhow::Result<()> {
+    let skills_dir = state.prompt_manager.workspace_dir().join("skills");
+    let snapshot =
+        skills::build_skills_status_snapshot(&skills_dir, state.prompt_manager.skills_enabled());
+    let payload = serde_json::json!({
+        "type": "skills_status",
+        "skills": snapshot,
+        "validation_errors": validation_errors.unwrap_or_default(),
+    });
+
+    ws_sink
+        .send(Message::text(payload.to_string()))
+        .await
+        .map_err(Into::into)
+}
+
+async fn send_skill_content(
+    ws_sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    path: &str,
+    content: &str,
+) -> anyhow::Result<()> {
+    let payload = serde_json::json!({
+        "type": "skill_content",
+        "path": path,
+        "content": content,
+    });
+
+    ws_sink
+        .send(Message::text(payload.to_string()))
+        .await
+        .map_err(Into::into)
+}
+
+async fn handle_skills_read(
+    state: &AppState,
+    client_msg: &ClientMessage,
+    ws_sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+) -> anyhow::Result<()> {
+    let path = required_field(client_msg.path.as_deref(), "path")?;
+    let skills_dir = state.prompt_manager.workspace_dir().join("skills");
+    let (resolved_path, content) = skills::read_skill_file(&skills_dir, path)?;
+    send_skill_content(ws_sink, &resolved_path.display().to_string(), &content).await
+}
+
+async fn handle_skills_set(
+    state: &AppState,
+    client_msg: &ClientMessage,
+    ws_sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+) -> anyhow::Result<()> {
+    let path = required_field(client_msg.path.as_deref(), "path")?;
+    let content = client_msg
+        .content
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("missing required field 'content'"))?;
+
+    let skills_dir = state.prompt_manager.workspace_dir().join("skills");
+    if let Err(err) = skills::write_skill_file(&skills_dir, path, content) {
+        send_skills_status(ws_sink, state, Some(vec![err.to_string()])).await?;
+        return Ok(());
+    }
+
+    send_skills_status(ws_sink, state, None).await?;
+    let (resolved_path, latest_content) = skills::read_skill_file(&skills_dir, path)?;
+    send_skill_content(
+        ws_sink,
+        &resolved_path.display().to_string(),
+        &latest_content,
+    )
+    .await
+}
+
 async fn handle_permissions_set(
     state: &AppState,
     client_msg: &ClientMessage,
@@ -1184,6 +1292,7 @@ mod tests {
                 request_id: None,
                 decision: None,
                 allow_rule: None,
+                path: None,
             },
             &mut current,
             &mut history,
@@ -1207,6 +1316,7 @@ mod tests {
                 request_id: None,
                 decision: None,
                 allow_rule: None,
+                path: None,
             },
             &mut current,
             &mut history,
@@ -1230,6 +1340,7 @@ mod tests {
                 request_id: None,
                 decision: None,
                 allow_rule: None,
+                path: None,
             },
             &mut current,
             &mut history,
@@ -1256,6 +1367,7 @@ mod tests {
                 request_id: None,
                 decision: None,
                 allow_rule: None,
+                path: None,
             },
             &mut current,
             &mut history,
@@ -1279,6 +1391,7 @@ mod tests {
                 request_id: None,
                 decision: None,
                 allow_rule: None,
+                path: None,
             },
             &mut current,
             &mut history,
@@ -1310,6 +1423,7 @@ mod tests {
                 request_id: None,
                 decision: None,
                 allow_rule: None,
+                path: None,
             },
             &mut current,
             &mut history,

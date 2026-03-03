@@ -84,6 +84,14 @@ impl PromptManager {
         self.build_prompt_with_session(None)
     }
 
+    pub fn workspace_dir(&self) -> &Path {
+        &self.workspace_dir
+    }
+
+    pub fn skills_enabled(&self) -> bool {
+        self.skills_enabled
+    }
+
     pub fn build_prompt_with_session(
         &self,
         session: Option<&SessionPromptContext>,

@@ -19,6 +19,8 @@ import type {
   PermissionsState,
   ResponseStats,
   ServerEvent,
+  SkillStatus,
+  SkillsStatusSnapshot,
   StoppedEvent,
   ThreadRecord,
   TokenUsage,
@@ -51,6 +53,13 @@ type AppState = {
   permissionsSavedAt: number | null;
   mcpEnabled: boolean;
   mcpServers: McpServerStatus[];
+  skillsLoaded: boolean;
+  skillsSaving: boolean;
+  skillsEnabled: boolean;
+  skills: SkillStatus[];
+  skillsErrors: string[];
+  skillContentByPath: Record<string, string>;
+  skillContentLoadingPath: string | null;
 };
 
 type AppStore = {
@@ -72,6 +81,9 @@ type AppStore = {
   updatePermissionsField: (field: "allow" | "deny", value: string) => void;
   updatePermissionsEnabled: (value: boolean) => void;
   refreshPermissions: () => void;
+  refreshSkills: () => void;
+  loadSkillContent: (path: string) => void;
+  saveSkill: (path: string, content: string) => void;
   refreshThreads: () => void;
 };
 
@@ -94,6 +106,13 @@ const DEFAULT_STATE: AppState = {
   permissionsSavedAt: null,
   mcpEnabled: true,
   mcpServers: [],
+  skillsLoaded: false,
+  skillsSaving: false,
+  skillsEnabled: true,
+  skills: [],
+  skillsErrors: [],
+  skillContentByPath: {},
+  skillContentLoadingPath: null,
 };
 
 const AppStoreContext = createContext<AppStore | null>(null);
@@ -347,6 +366,42 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
     }));
   }, []);
 
+  const applySkillsStatus = useCallback(
+    (skills?: SkillsStatusSnapshot, validationErrors: string[] = []): void => {
+      setState((prev) => {
+        const nextSkills = Array.isArray(skills?.skills)
+          ? [...skills.skills]
+          : prev.skills;
+        const validPaths = new Set(nextSkills.map((skill) => skill.path));
+        const nextContentByPath: Record<string, string> = {};
+        for (const [path, content] of Object.entries(prev.skillContentByPath)) {
+          if (validPaths.has(path)) {
+            nextContentByPath[path] = content;
+          }
+        }
+
+        return {
+          ...prev,
+          skillsLoaded: true,
+          skillsSaving: false,
+          skillsEnabled:
+            typeof skills?.enabled === "boolean"
+              ? skills.enabled
+              : prev.skillsEnabled,
+          skills: nextSkills,
+          skillsErrors: validationErrors,
+          skillContentByPath: nextContentByPath,
+          skillContentLoadingPath:
+            prev.skillContentLoadingPath &&
+            validPaths.has(prev.skillContentLoadingPath)
+              ? prev.skillContentLoadingPath
+              : null,
+        };
+      });
+    },
+    [],
+  );
+
   const hydrateEntriesFromHistory = useCallback(
     (history: HistoryMessage[], toolOutputsExpanded: boolean): Entry[] => {
       const rebuilt: Entry[] = [];
@@ -587,6 +642,8 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         isWaiting: false,
         killRequested: false,
         permissionsSaving: false,
+        skillsSaving: false,
+        skillContentLoadingPath: null,
       }));
       finishCurrentBubble();
       resetActiveResponseState();
@@ -798,6 +855,24 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
     [],
   );
 
+  const onSkillContent = useCallback((path: string, content: string): void => {
+    if (!path.trim()) {
+      return;
+    }
+
+    setState((prev) => ({
+      ...prev,
+      skillContentByPath: {
+        ...prev.skillContentByPath,
+        [path]: content,
+      },
+      skillContentLoadingPath:
+        prev.skillContentLoadingPath === path
+          ? null
+          : prev.skillContentLoadingPath,
+    }));
+  }, []);
+
   const onDone = useCallback(
     (event: DoneEvent): void => {
       const stats = buildResponseStats(event);
@@ -974,6 +1049,12 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         case "mcp_status":
           applyMcpStatus(event.mcp);
           return;
+        case "skills_status":
+          applySkillsStatus(event.skills, event.validation_errors ?? []);
+          return;
+        case "skill_content":
+          onSkillContent(event.path ?? "", event.content ?? "");
+          return;
         case "error":
           if (suppressAutoRefreshErrorRef.current) {
             const message = event.message ?? "";
@@ -992,11 +1073,13 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
     [
       applyMcpStatus,
       applyPermissionsState,
+      applySkillsStatus,
       applyThreadStateAndSnapshot,
       hydrateCurrentThread,
       onChunk,
       onDone,
       onError,
+      onSkillContent,
       onStopped,
       onToolApprovalRequired,
       onToolCallResult,
@@ -1050,6 +1133,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
 
       sendControl({ type: "thread_list" });
       sendControl({ type: "permissions_get" });
+      sendControl({ type: "skills_get" });
     };
 
     socket.onclose = () => {
@@ -1289,6 +1373,52 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
     sendControl({ type: "permissions_get" });
   }, [sendControl]);
 
+  const refreshSkills = useCallback((): void => {
+    sendControl({ type: "skills_get" });
+  }, [sendControl]);
+
+  const loadSkillContent = useCallback(
+    (path: string): void => {
+      const trimmed = path.trim();
+      if (!trimmed) {
+        return;
+      }
+      if (stateRef.current.connectionState !== "connected") {
+        return;
+      }
+
+      setState((prev) => ({
+        ...prev,
+        skillContentLoadingPath: trimmed,
+      }));
+      sendControl({ type: "skills_read", path: trimmed });
+    },
+    [sendControl],
+  );
+
+  const saveSkill = useCallback(
+    (path: string, content: string): void => {
+      const trimmedPath = path.trim();
+      if (!trimmedPath) {
+        return;
+      }
+      if (stateRef.current.connectionState !== "connected") {
+        return;
+      }
+      if (stateRef.current.skillsSaving) {
+        return;
+      }
+
+      setState((prev) => ({
+        ...prev,
+        skillsSaving: true,
+        skillsErrors: [],
+      }));
+      sendControl({ type: "skills_set", path: trimmedPath, content });
+    },
+    [sendControl],
+  );
+
   const refreshThreads = useCallback((): void => {
     sendControl({ type: "thread_list" });
   }, [sendControl]);
@@ -1485,18 +1615,24 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       updatePermissionsField,
       updatePermissionsEnabled,
       refreshPermissions,
+      refreshSkills,
+      loadSkillContent,
+      saveSkill,
       refreshThreads,
     }),
     [
       clearCurrentThread,
       createThread,
       deleteThread,
+      loadSkillContent,
       refreshPermissions,
+      refreshSkills,
       refreshThreads,
       renameThread,
       requestKillSwitch,
       runSlashCommand,
       savePermissions,
+      saveSkill,
       sendMessage,
       setShowToolCalls,
       setToolOutputsExpanded,

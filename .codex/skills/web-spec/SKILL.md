@@ -1,6 +1,6 @@
 ---
 name: web-spec
-description: Enforce the project web UI specification for colors, typography, and separator styling. Use when creating or editing frontend UI/CSS/Tailwind in this repository to keep visual output consistent with the locked palette and font rules.
+description: Enforce the project web UI specification for colors, typography, separator styling, and page routing/query-state rules. Use when creating or editing frontend UI/CSS/Tailwind/router behavior in this repository to keep visual and navigation output consistent with the locked standards.
 ---
 
 # Web Spec
@@ -62,12 +62,33 @@ description: Enforce the project web UI specification for colors, typography, an
 - Chat route (`/`) should use a flat `background` token surface for header and main canvas.
 - If decorative overlays (noise/gradient) are used, keep them off the chat route unless explicitly requested.
 
+## Page Routing Rules
+
+- Keep route definitions centralized in `web/src/router.tsx`; do not introduce ad-hoc route constants in component files.
+- Use TanStack Router navigation APIs (`useNavigate`, route `search` state) instead of `window.location` mutations.
+- Keep current canonical pages stable unless explicitly requested:
+  - `/` (chat)
+  - `/settings`
+  - `/threads`
+- For settings sections, use query-driven state only on `/settings`:
+  - Canonical form: `/settings?section=<id>`
+  - Allowed section ids: `general`, `permissions`, `skills`, `mcp`
+  - Invalid/missing `section` must resolve to `general`
+- When adding query-backed UI state, make URL query the source of truth so refresh/back-forward preserves state.
+- Validate and normalize route search params in router-level `validateSearch` rather than scattered component parsing.
+- Do not use hash fragments (`#...`) for settings subsection selection when query params are already the contract.
+- Keep navigation payloads typed and minimal (`navigate({ to, search })`), avoiding unrelated query key churn.
+
 ## Verification Checklist
 
 - Search for disallowed color literals and utility colors before finalizing.
 - Confirm separators use the approved color and thin stroke.
 - Confirm newly touched components consume theme tokens (no ad-hoc inline color styles).
 - Confirm de-emphasized gray text uses `opacity-50` where applicable.
+- For routing-related UI changes, confirm:
+  - `/settings?section=skills` opens Skills section
+  - refresh preserves active section
+  - browser back/forward restores section state
 - Run checks after UI edits:
   - `cd web && bun run typecheck`
   - `cd web && bun run build`
