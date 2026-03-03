@@ -17,7 +17,9 @@ createRoot(rootElement).render(
   <React.StrictMode>
     <AppStoreProvider>
       <RouterProvider router={router} />
-      {process.env.NODE_ENV === "development" && <Agentation />}
+      {process.env.NODE_ENV === "development" && (
+        <Agentation endpoint="http://localhost:4747" />
+      )}
     </AppStoreProvider>
   </React.StrictMode>,
 );
