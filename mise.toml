@@ -6,7 +6,7 @@ prek = "latest"
 prettier = "latest"
 
 [env]
-RUST_LOG = "rikabot=info,reqwest=warn,hyper_util=warn"
+RUST_LOG = "info"
 # RUSTFLAGS = "-Awarnings"
 
 [hooks]
@@ -22,10 +22,18 @@ run = "bun install"
 run = "cargo build"
 
 [tasks."dev:be"]
-run = "watchexec --restart --exts rs -- cargo run"
+env = { RIKA_DEV_MODE = "1", RIKA_DEV_CORS_ORIGINS = "http://localhost:3000,http://127.0.0.1:3000" }
+run = "watchexec --restart --exts rs,toml -- cargo run -- start --foreground"
 [tasks."dev:fe"]
+env = { RIKA_DEV_MODE = "1", RIKA_DEV_BACKEND_WS_HOSTPORT = "127.0.0.1:4728" }
 dir = "{{cwd}}/web"
-run = "watchexec --restart --exts html,css,ts,tsx -- bun run build"
+run = "watchexec --clear --restart --exts html,css,ts,tsx -- bun run dev"
+
+[tasks."build:be"]
+run = "cargo build --locked"
+[tasks."build:fe"]
+dir = "{{cwd}}/web"
+run = "bun run build"
 
 [tasks."test:be"]
 run = "cargo test"

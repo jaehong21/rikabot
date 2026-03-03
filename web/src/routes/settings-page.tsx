@@ -121,7 +121,14 @@ export function SettingsPage() {
     navigate({ to: "/settings", search: { section } });
   };
 
-  const openSkillEditor = (path: string): void => {
+  const toggleSkillEditor = (path: string): void => {
+    if (editingSkillPath === path) {
+      setEditingSkillPath(null);
+      setEditorContent("");
+      setEditorDirty(false);
+      return;
+    }
+
     setEditingSkillPath(path);
     setEditorDirty(false);
     const cached = state.skillContentByPath[path];
@@ -374,7 +381,7 @@ export function SettingsPage() {
                                 )}
                             </div>
                             <Button
-                              onClick={() => openSkillEditor(skill.path)}
+                              onClick={() => toggleSkillEditor(skill.path)}
                               className={SETTINGS_SECONDARY_BUTTON_CLASS}
                             >
                               Edit

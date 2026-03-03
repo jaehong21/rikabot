@@ -6,7 +6,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use axum::{
     body::Body,
-    http::{header, StatusCode, Uri},
+    http::{header, HeaderValue, StatusCode, Uri},
     response::{IntoResponse, Response},
     routing::get,
     Router,
@@ -18,6 +18,7 @@ use tokio::{
     sync::{broadcast, mpsc},
     task::JoinHandle,
 };
+use tower_http::cors::{Any, CorsLayer};
 use tower_http::timeout::TimeoutLayer;
 
 use crate::agent::Agent;
@@ -132,7 +133,36 @@ fn build_router(state: AppState) -> Router {
             StatusCode::REQUEST_TIMEOUT,
             std::time::Duration::from_secs(30),
         ))
+        .layer(build_cors_layer_from_env())
         .with_state(state)
+}
+
+fn build_cors_layer_from_env() -> CorsLayer {
+    let dev_mode = std::env::var("RIKA_DEV_MODE")
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        .unwrap_or(false);
+    if !dev_mode {
+        return CorsLayer::new();
+    }
+
+    let raw = std::env::var("RIKA_DEV_CORS_ORIGINS").unwrap_or_default();
+    let mut origins: Vec<HeaderValue> = Vec::new();
+    for candidate in raw.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        match HeaderValue::from_str(candidate) {
+            Ok(value) => origins.push(value),
+            Err(err) => tracing::warn!("ignoring invalid CORS origin `{}`: {}", candidate, err),
+        }
+    }
+
+    if origins.is_empty() {
+        tracing::warn!("RIKA_DEV_MODE is enabled but no valid RIKA_DEV_CORS_ORIGINS were provided");
+        return CorsLayer::new();
+    }
+
+    CorsLayer::new()
+        .allow_origin(origins)
+        .allow_methods(Any)
+        .allow_headers(Any)
 }
 
 /// Start the HTTP server.

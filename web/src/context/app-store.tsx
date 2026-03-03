@@ -241,6 +241,25 @@ function findToolIndex(entries: Entry[], callId: string, name: string): number {
   return -1;
 }
 
+function resolveBackendWsUrl(): string {
+  if (process.env.NODE_ENV === "development") {
+    const hostPort = process.env.RIKA_DEV_BACKEND_WS_HOSTPORT?.trim();
+    if (hostPort) {
+      return `ws://${hostPort}/ws`;
+    }
+
+    const explicitUrl = process.env.RIKA_DEV_BACKEND_WS_URL?.trim();
+    if (explicitUrl) {
+      return explicitUrl;
+    }
+
+    // Backend default host is 127.0.0.1; this avoids localhost/IPv6 (::1) mismatches in browsers.
+    return "ws://127.0.0.1:4728/ws";
+  }
+  const proto = window.location.protocol === "https:" ? "wss" : "ws";
+  return `${proto}://${window.location.host}/ws`;
+}
+
 export function AppStoreProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AppState>(DEFAULT_STATE);
   const stateRef = useRef(state);
@@ -1113,8 +1132,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
 
     setState((prev) => ({ ...prev, connectionState: "connecting" }));
 
-    const proto = window.location.protocol === "https:" ? "wss" : "ws";
-    const socket = new WebSocket(`${proto}://${window.location.host}/ws`);
+    const socket = new WebSocket(resolveBackendWsUrl());
     wsRef.current = socket;
 
     socket.onopen = () => {
@@ -1159,6 +1177,10 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
   }, [handleEvent, scheduleReconnect, sendControl]);
 
   useEffect(() => {
+    // React StrictMode runs effect cleanup once in development before the real mount.
+    // Reset disposed flag on each setup so the real mount can establish WebSocket.
+    disposedRef.current = false;
+
     setState((prev) => ({
       ...prev,
       toolOutputsExpanded: readBooleanPreference(TOOL_PREFS_STORAGE_KEY, true),
