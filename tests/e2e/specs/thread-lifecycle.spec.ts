@@ -25,3 +25,17 @@ test("handles thread lifecycle slash commands through backend websocket", async 
     0,
   );
 });
+
+test("creates and switches to a new thread from left rail action", async ({
+  page,
+}) => {
+  const prompt = `left-rail-${Date.now()}`;
+
+  await page.goto("/");
+  await sendFromComposer(page, prompt);
+  await expect(page.getByText(prompt, { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "New chat" }).click();
+  await expect(page.getByText("Welcome to Rika")).toBeVisible();
+  await expect(page.getByText(prompt, { exact: true })).toHaveCount(0);
+});

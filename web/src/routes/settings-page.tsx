@@ -28,6 +28,10 @@ const SETTINGS_SECONDARY_BUTTON_CLASS = [
   "h-9 border border-border bg-input px-4 text-foreground hover:bg-background",
 ].join(" ");
 
+function isSettingsSectionId(value: unknown): value is SettingsSectionId {
+  return SETTINGS_SECTIONS.some((section) => section.id === value);
+}
+
 type SectionHeaderProps = {
   title: string;
 };
@@ -76,7 +80,9 @@ export function SettingsPage() {
     loadSkillContent,
     saveSkill,
   } = useAppStore();
-  const activeSection = search.section ?? "general";
+  const activeSection = isSettingsSectionId(search.section)
+    ? search.section
+    : "general";
   const [editingSkillPath, setEditingSkillPath] = useState<string | null>(null);
   const [editorContent, setEditorContent] = useState("");
   const [editorDirty, setEditorDirty] = useState(false);

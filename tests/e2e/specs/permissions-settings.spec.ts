@@ -24,3 +24,54 @@ test("persists permissions rules through frontend and backend", async ({
     page.getByPlaceholder("shell(command:git status *)"),
   ).toHaveValue(allowRule);
 });
+
+test("shows validation errors for malformed permission rules", async ({
+  page,
+}) => {
+  await page.goto("/settings?section=permissions");
+
+  const allowTextarea = page.getByPlaceholder("shell(command:git status *)");
+
+  await allowTextarea.fill("not-a-valid-rule");
+  await page.getByRole("button", { name: "Save permissions" }).click();
+  await expect(page.getByText(/invalid rule/i)).toBeVisible();
+
+  await allowTextarea.fill("shell(command:echo fixed *)");
+  await page.getByRole("button", { name: "Save permissions" }).click();
+  await expect(page.getByText("Saved at")).toBeVisible();
+  await expect(page.getByText(/invalid rule/i)).toHaveCount(0);
+});
+
+test("persists permissions enabled switch and restores original value", async ({
+  page,
+}) => {
+  await page.goto("/settings?section=permissions");
+
+  const enabledSwitch = page.getByRole("switch").first();
+  const original = await enabledSwitch.getAttribute("aria-checked");
+  const target = original === "true" ? "false" : "true";
+
+  if (target !== original) {
+    await enabledSwitch.click();
+  }
+  await page.getByRole("button", { name: "Save permissions" }).click();
+  await expect(page.getByText("Saved at")).toBeVisible();
+  await expect(enabledSwitch).toHaveAttribute("aria-checked", target);
+
+  await page.reload();
+  await expect(page.getByRole("switch").first()).toHaveAttribute(
+    "aria-checked",
+    target,
+  );
+
+  const restoredSwitch = page.getByRole("switch").first();
+  const current = await restoredSwitch.getAttribute("aria-checked");
+  if (current !== original) {
+    await restoredSwitch.click();
+  }
+  await page.getByRole("button", { name: "Save permissions" }).click();
+  await expect(restoredSwitch).toHaveAttribute(
+    "aria-checked",
+    original ?? "true",
+  );
+});

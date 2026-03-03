@@ -3,6 +3,12 @@ import http from "node:http";
 const HOST = "127.0.0.1";
 const PORT = 8797;
 
+function sleep(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
 function sendJson(res, statusCode, body) {
   const payload = JSON.stringify(body);
   res.writeHead(statusCode, {
@@ -32,7 +38,30 @@ function parseBody(req) {
   });
 }
 
-function buildMockResponse(requestBody) {
+function extractToolOutput(messages) {
+  const lastToolMessage = [...messages].reverse().find((message) => {
+    return (
+      message && message.role === "tool" && typeof message.content === "string"
+    );
+  });
+
+  if (!lastToolMessage) {
+    return "";
+  }
+
+  try {
+    const parsed = JSON.parse(lastToolMessage.content);
+    if (typeof parsed?.content === "string") {
+      return parsed.content;
+    }
+  } catch {
+    // fall through
+  }
+
+  return String(lastToolMessage.content ?? "");
+}
+
+async function buildMockResponse(requestBody) {
   const messages = Array.isArray(requestBody?.messages)
     ? requestBody.messages
     : [];
@@ -48,6 +77,98 @@ function buildMockResponse(requestBody) {
     );
 
   const promptText = lastUserMessage?.content?.trim() ?? "";
+  const model =
+    typeof requestBody?.model === "string" && requestBody.model.trim()
+      ? requestBody.model
+      : "mock-model";
+
+  if (promptText.startsWith("e2e-slow:")) {
+    await sleep(10_000);
+    return {
+      id: "chatcmpl-e2e-slow",
+      object: "chat.completion",
+      created: Math.floor(Date.now() / 1000),
+      model,
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: "assistant",
+            content: `mock-e2e: ${promptText}`,
+          },
+          finish_reason: "stop",
+        },
+      ],
+      usage: {
+        prompt_tokens: 8,
+        completion_tokens: 8,
+        total_tokens: 16,
+      },
+    };
+  }
+
+  if (promptText.startsWith("e2e-tool-approval:")) {
+    const toolOutput = extractToolOutput(messages);
+
+    if (!toolOutput) {
+      return {
+        id: "chatcmpl-e2e-tool-1",
+        object: "chat.completion",
+        created: Math.floor(Date.now() / 1000),
+        model,
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: "Using a tool now.",
+              tool_calls: [
+                {
+                  id: "call-e2e-shell",
+                  type: "function",
+                  function: {
+                    name: "shell",
+                    arguments: JSON.stringify({
+                      command: "echo e2e-tool-approved",
+                    }),
+                  },
+                },
+              ],
+            },
+            finish_reason: "tool_calls",
+          },
+        ],
+        usage: {
+          prompt_tokens: 8,
+          completion_tokens: 8,
+          total_tokens: 16,
+        },
+      };
+    }
+
+    return {
+      id: "chatcmpl-e2e-tool-2",
+      object: "chat.completion",
+      created: Math.floor(Date.now() / 1000),
+      model,
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: "assistant",
+            content: `mock-e2e: tool-output:${toolOutput.trim()}`,
+          },
+          finish_reason: "stop",
+        },
+      ],
+      usage: {
+        prompt_tokens: 8,
+        completion_tokens: 8,
+        total_tokens: 16,
+      },
+    };
+  }
+
   const responseText = promptText
     ? `mock-e2e: ${promptText}`
     : "mock-e2e: empty";
@@ -56,10 +177,7 @@ function buildMockResponse(requestBody) {
     id: "chatcmpl-e2e",
     object: "chat.completion",
     created: Math.floor(Date.now() / 1000),
-    model:
-      typeof requestBody?.model === "string" && requestBody.model.trim()
-        ? requestBody.model
-        : "mock-model",
+    model,
     choices: [
       {
         index: 0,
@@ -91,7 +209,8 @@ const server = http.createServer(async (req, res) => {
   ) {
     try {
       const body = await parseBody(req);
-      sendJson(res, 200, buildMockResponse(body));
+      const response = await buildMockResponse(body);
+      sendJson(res, 200, response);
     } catch (error) {
       sendJson(res, 400, {
         error: "Invalid JSON body",
