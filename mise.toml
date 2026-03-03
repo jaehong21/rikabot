@@ -27,7 +27,7 @@ run = "watchexec --restart --exts rs,toml -- cargo run -- start --foreground"
 [tasks."dev:fe"]
 env = { RIKA_DEV_MODE = "1", RIKA_DEV_BACKEND_WS_HOSTPORT = "127.0.0.1:4728" }
 dir = "{{cwd}}/web"
-run = "watchexec --clear --restart --exts html,css,ts,tsx -- bun run dev"
+run = "bun run dev"
 
 [tasks."build:be"]
 run = "cargo build --locked"
