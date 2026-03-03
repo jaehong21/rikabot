@@ -6,5 +6,8 @@
 # build
 /target
 
+# e2e artifacts
+/.tmp/e2e
+
 # custom
 workspace

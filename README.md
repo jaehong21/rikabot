@@ -16,3 +16,17 @@ Rika is currently an implementation just for `@me` (`jaehong21`). It does not im
 - Routes messages through a tool-enabled agent loop (shell + filesystem + MCP integrations).
 - Includes permission controls and explicit approval flows for sensitive operations.
 - Supports MCP server connections (HTTP and stdio transport), also with OAuth authentication.
+
+## Frontend E2E Testing
+
+Playwright E2E tests run against:
+
+- real frontend dev server,
+- real Rust backend WebSocket server,
+- local mock OpenAI-compatible endpoint for deterministic agent responses.
+
+Commands:
+
+```bash
+mise run test:e2e
+```

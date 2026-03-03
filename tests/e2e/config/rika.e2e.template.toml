@@ -1,0 +1,20 @@
+host = "127.0.0.1"
+port = 14728
+provider = "openai"
+model = "gpt-5.2"
+temperature = 0.0
+workspace_dir = "./.tmp/e2e/workspace"
+
+[providers.openai]
+api_key = "e2e-test-key"
+base_url = "http://127.0.0.1:8797/v1"
+
+[permissions]
+enabled = true
+
+[permissions.tools]
+allow = []
+deny = []
+
+[mcp]
+enabled = false

@@ -4,6 +4,7 @@ rust = "stable"
 watchexec = "latest"
 prek = "latest"
 prettier = "latest"
+"npm:playwright" = "latest"
 
 [env]
 RUST_LOG = "info"
@@ -37,3 +38,12 @@ run = "bun run build"
 
 [tasks."test:be"]
 run = "cargo test"
+[tasks."test:e2e"]
+dir = "{{cwd}}/tests/e2e"
+run = '''
+rm -rf ../../.tmp/e2e # clean up previous test data
+bun install
+bunx playwright install chromium
+bash scripts/prepare-e2e-env.sh
+bun run test --config playwright.config.mjs
+'''
