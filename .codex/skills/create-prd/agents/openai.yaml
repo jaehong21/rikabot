@@ -1,0 +1,4 @@
+interface:
+  display_name: "Create PRD"
+  short_description: "Drafts structured PRDs for big product changes"
+  default_prompt: "Use $create-prd to draft a complete PRD for a major product or architecture change with scope, requirements, and acceptance criteria."
