@@ -250,7 +250,7 @@ export function SettingsPage() {
                   <label className="space-y-2">
                     <span className="text-sm font-medium">Allow rules</span>
                     <Textarea
-                      rows={10}
+                      rows={20}
                       value={state.permissionsAllowText}
                       onChange={(event) =>
                         updatePermissionsField(
@@ -268,7 +268,7 @@ export function SettingsPage() {
                   <label className="space-y-2">
                     <span className="text-sm font-medium">Deny rules</span>
                     <Textarea
-                      rows={10}
+                      rows={20}
                       value={state.permissionsDenyText}
                       onChange={(event) =>
                         updatePermissionsField(
