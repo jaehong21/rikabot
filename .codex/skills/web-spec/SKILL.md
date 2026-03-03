@@ -35,6 +35,10 @@ description: Enforce the project web UI specification for colors, typography, se
   - `"Fira Code", "Fira Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace`
 - Keep body text and controls on this stack unless the user explicitly requests otherwise.
 
+## Placeholder Text
+
+- For `Input` and `Textarea` components, style placeholders using approved token-based opacity (for example: `placeholder:text-foreground/70`) so placeholder text appears gray without introducing new color tokens.
+
 ## Implementation Rules
 
 - Keep theme tokens centralized (for this project: `web/src/styles.css` and `web/tailwind.config.ts`).
