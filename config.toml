@@ -78,7 +78,7 @@
 #   "web_fetch(domain:docs.openclaw.ai)",
 #   "web_search(*)",
 #   "shell(command:cat *)",
-#   "shell(command:cd *)",
+#   "shell(command:git pull,path:./repo)",
 #   "shell(command:chmod *)",
 #   "shell(command:cp *)",
 #   "shell(command:curl *)",

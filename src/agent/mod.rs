@@ -1,5 +1,6 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -300,7 +301,11 @@ impl Agent {
                                 name: tc.name.clone(),
                                 args: args.clone(),
                                 deny_reason,
-                                suggested_allow_rule: suggested_allow_rule(&tc.name, &args),
+                                suggested_allow_rule: suggested_allow_rule(
+                                    &tc.name,
+                                    &args,
+                                    self.tool_registry.workspace_dir(),
+                                ),
                             });
 
                             let decision = self
@@ -493,7 +498,11 @@ impl Agent {
     }
 }
 
-fn suggested_allow_rule(tool_name: &str, args: &serde_json::Value) -> String {
+fn suggested_allow_rule(
+    tool_name: &str,
+    args: &serde_json::Value,
+    workspace_dir: Option<&Path>,
+) -> String {
     if let Some((server_prefix, _tool_name)) = tool_name.split_once("__") {
         if let Some(stripped) = server_prefix.strip_prefix("mcp_") {
             return format!("mcp_{}_*(*)", stripped);
@@ -513,10 +522,27 @@ fn suggested_allow_rule(tool_name: &str, args: &serde_json::Value) -> String {
         let mut tokens = command.split_whitespace();
         let first = tokens.next().unwrap_or_default();
         let second = tokens.next();
-        if let Some(second) = second {
-            return format!("shell(command:{} {} *)", first, second);
+        let command_rule = if let Some(second) = second {
+            format!("{} {} *", first, second)
+        } else {
+            format!("{} *", first)
+        };
+        let requested_path = args.get("path").and_then(serde_json::Value::as_str);
+        let path_rule = crate::tools::shell::resolve_effective_path(workspace_dir, requested_path)
+            .ok()
+            .map(|path| path.to_string_lossy().to_string())
+            .or_else(|| {
+                requested_path
+                    .map(str::trim)
+                    .filter(|path| !path.is_empty())
+                    .map(str::to_string)
+            });
+
+        if let Some(path_rule) = path_rule {
+            return format!("shell(command:{command_rule},path:{path_rule})");
         }
-        return format!("shell(command:{} *)", first);
+
+        return format!("shell(command:{command_rule})");
     }
 
     if tool_name.eq_ignore_ascii_case("filesystem_read") {
@@ -536,4 +562,49 @@ fn suggested_allow_rule(tool_name: &str, args: &serde_json::Value) -> String {
     }
 
     format!("{}(*)", tool_name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn make_temp_dir(name: &str) -> std::path::PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be monotonic")
+            .as_nanos();
+        std::env::temp_dir().join(format!("rikabot_agent_{name}_{nonce}"))
+    }
+
+    #[test]
+    fn suggested_shell_rule_includes_resolved_path() {
+        let workspace = make_temp_dir("suggested_rule_path");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let canonical = std::fs::canonicalize(&workspace).unwrap();
+        let args = serde_json::json!({
+            "command": "git pull"
+        });
+
+        let rule = suggested_allow_rule("shell", &args, Some(&workspace));
+
+        assert_eq!(
+            rule,
+            format!(
+                "shell(command:git pull *,path:{})",
+                canonical.to_string_lossy()
+            )
+        );
+        let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn suggested_shell_rule_uses_current_dir_without_workspace_context() {
+        let args = serde_json::json!({
+            "command": "git pull"
+        });
+
+        let rule = suggested_allow_rule("shell", &args, None);
+        assert!(rule.starts_with("shell(command:git pull *,path:"));
+    }
 }

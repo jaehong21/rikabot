@@ -1,7 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::RwLock;
 use tokio::sync::RwLock as TokioRwLock;
@@ -110,6 +110,7 @@ pub trait Tool: Send + Sync {
 pub struct ToolRegistry {
     tools: Arc<RwLock<Vec<Arc<dyn Tool>>>>,
     permission_engine: Arc<TokioRwLock<PermissionEngine>>,
+    workspace_dir: Option<PathBuf>,
 }
 
 impl ToolRegistry {
@@ -124,7 +125,17 @@ impl ToolRegistry {
         Self {
             tools: Arc::new(RwLock::new(Vec::new())),
             permission_engine,
+            workspace_dir: None,
         }
+    }
+
+    pub fn with_workspace_dir(mut self, workspace_dir: PathBuf) -> Self {
+        self.workspace_dir = Some(workspace_dir);
+        self
+    }
+
+    pub fn workspace_dir(&self) -> Option<&Path> {
+        self.workspace_dir.as_deref()
     }
 
     /// Register a new tool.
@@ -202,7 +213,8 @@ impl ToolRegistry {
         .ok_or_else(|| anyhow::anyhow!("Unknown tool: {}", name))?;
 
         if enforce_permissions {
-            let permission_args = enrich_args_for_permissions(name, &args);
+            let permission_args =
+                enrich_args_for_permissions(name, &args, self.workspace_dir.as_deref());
             let decision = {
                 let permissions = self.permission_engine.read().await;
                 permissions.evaluate(name, &permission_args)
@@ -250,7 +262,8 @@ pub fn default_registry(
     web_fetch_cfg: &crate::config::WebFetchConfig,
     web_search_cfg: &crate::config::WebSearchConfig,
 ) -> ToolRegistry {
-    let mut registry = ToolRegistry::with_permission_engine(permission_engine);
+    let mut registry = ToolRegistry::with_permission_engine(permission_engine)
+        .with_workspace_dir(workspace_dir.to_path_buf());
     if shell_cfg.enabled {
         registry.register(Box::new(shell::ShellTool::with_workspace_dir_and_limits(
             shell_cfg.resolved_timeout_secs(),
@@ -289,26 +302,59 @@ pub fn default_registry(
     registry
 }
 
-fn enrich_args_for_permissions(name: &str, args: &serde_json::Value) -> serde_json::Value {
-    if !name.eq_ignore_ascii_case("web_fetch") {
-        return args.clone();
+fn enrich_args_for_permissions(
+    name: &str,
+    args: &serde_json::Value,
+    workspace_dir: Option<&Path>,
+) -> serde_json::Value {
+    if name.eq_ignore_ascii_case("shell") {
+        return enrich_shell_args_for_permissions(args, workspace_dir);
     }
 
-    let mut enriched = args.clone();
-    let url = args
-        .get("url")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("");
-    if url.is_empty() {
+    if name.eq_ignore_ascii_case("web_fetch") {
+        let mut enriched = args.clone();
+        let url = args
+            .get("url")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        if url.is_empty() {
+            return enriched;
+        }
+
+        let domain = url::Url::parse(url)
+            .ok()
+            .and_then(|parsed| parsed.host_str().map(|host| host.to_ascii_lowercase()));
+
+        if let (Some(domain), serde_json::Value::Object(map)) = (domain, &mut enriched) {
+            map.insert("domain".to_string(), serde_json::Value::String(domain));
+        }
+
         return enriched;
     }
 
-    let domain = url::Url::parse(url)
-        .ok()
-        .and_then(|parsed| parsed.host_str().map(|host| host.to_ascii_lowercase()));
+    args.clone()
+}
 
-    if let (Some(domain), serde_json::Value::Object(map)) = (domain, &mut enriched) {
-        map.insert("domain".to_string(), serde_json::Value::String(domain));
+fn enrich_shell_args_for_permissions(
+    args: &serde_json::Value,
+    workspace_dir: Option<&Path>,
+) -> serde_json::Value {
+    let mut enriched = args.clone();
+    let Some(map) = enriched.as_object_mut() else {
+        return enriched;
+    };
+
+    let requested_path = args.get("path").and_then(serde_json::Value::as_str);
+    if let Ok(effective_path) = shell::resolve_effective_path(workspace_dir, requested_path) {
+        map.insert(
+            "path".to_string(),
+            serde_json::Value::String(effective_path.to_string_lossy().to_string()),
+        );
+    } else if let Some(raw) = requested_path.map(str::trim).filter(|raw| !raw.is_empty()) {
+        map.insert(
+            "path".to_string(),
+            serde_json::Value::String(raw.to_string()),
+        );
     }
 
     enriched
@@ -327,7 +373,7 @@ mod tests {
         let args = serde_json::json!({
             "url": "https://Docs.OpenClaw.ai/path/to/page?x=1"
         });
-        let enriched = enrich_args_for_permissions("web_fetch", &args);
+        let enriched = enrich_args_for_permissions("web_fetch", &args, None);
         assert_eq!(
             enriched.get("domain").and_then(serde_json::Value::as_str),
             Some("docs.openclaw.ai")
@@ -339,8 +385,33 @@ mod tests {
         let args = serde_json::json!({
             "query": "rust tooling"
         });
-        let enriched = enrich_args_for_permissions("web_search", &args);
+        let enriched = enrich_args_for_permissions("web_search", &args, None);
         assert_eq!(enriched, args);
+    }
+
+    #[test]
+    fn enriches_shell_args_with_resolved_path() {
+        let workspace = std::env::temp_dir().join(format!(
+            "rikabot_tool_perm_shell_path_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock should be monotonic")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(workspace.join("repo")).unwrap();
+        let canonical = std::fs::canonicalize(workspace.join("repo")).unwrap();
+
+        let args = serde_json::json!({
+            "command": "git pull",
+            "path": "repo"
+        });
+        let enriched = enrich_args_for_permissions("shell", &args, Some(&workspace));
+
+        assert_eq!(
+            enriched.get("path").and_then(serde_json::Value::as_str),
+            Some(canonical.to_string_lossy().as_ref())
+        );
+        let _ = std::fs::remove_dir_all(workspace);
     }
 
     #[tokio::test]
@@ -359,6 +430,7 @@ mod tests {
             &enrich_args_for_permissions(
                 "web_fetch",
                 &serde_json::json!({"url":"https://docs.openclaw.ai/docs"}),
+                None,
             ),
         );
         let denied = engine.evaluate(
@@ -366,11 +438,60 @@ mod tests {
             &enrich_args_for_permissions(
                 "web_fetch",
                 &serde_json::json!({"url":"https://github.com/openclaw"}),
+                None,
             ),
         );
 
         assert!(allowed.allowed);
         assert!(!denied.allowed);
+    }
+
+    #[test]
+    fn permission_engine_matches_shell_command_and_path_selector() {
+        let workspace = std::env::temp_dir().join(format!(
+            "rikabot_tool_perm_shell_selector_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock should be monotonic")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&workspace).unwrap();
+        let workspace_canonical = std::fs::canonicalize(&workspace).unwrap();
+        let workspace_text = workspace_canonical.to_string_lossy().to_string();
+
+        let permission_cfg = PermissionsConfig {
+            enabled: true,
+            tools: ToolPermissionsConfig {
+                allow: vec![format!("shell(command:git pull,path:{workspace_text})")],
+                deny: vec![],
+            },
+        };
+        let engine = PermissionEngine::from_config(&permission_cfg).unwrap();
+
+        let allowed = engine.evaluate(
+            "shell",
+            &enrich_args_for_permissions(
+                "shell",
+                &serde_json::json!({
+                    "command": "git pull"
+                }),
+                Some(&workspace),
+            ),
+        );
+        let denied = engine.evaluate(
+            "shell",
+            &enrich_args_for_permissions(
+                "shell",
+                &serde_json::json!({
+                    "command": "git status"
+                }),
+                Some(&workspace),
+            ),
+        );
+
+        assert!(allowed.allowed);
+        assert!(!denied.allowed);
+        let _ = std::fs::remove_dir_all(workspace);
     }
 
     #[test]

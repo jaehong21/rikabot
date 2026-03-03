@@ -1,5 +1,5 @@
 use super::*;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::process::Command;
 
@@ -48,6 +48,55 @@ impl ShellTool {
     }
 }
 
+pub fn resolve_effective_path(
+    workspace_dir: Option<&Path>,
+    requested_path: Option<&str>,
+) -> Result<PathBuf> {
+    let requested_path = requested_path.map(str::trim).filter(|raw| !raw.is_empty());
+    let default_dir = workspace_dir
+        .map(Path::to_path_buf)
+        .or_else(|| std::env::current_dir().ok());
+
+    let unresolved = match requested_path {
+        Some(raw) => {
+            let path = PathBuf::from(raw);
+            if path.is_absolute() {
+                path
+            } else {
+                let workspace = default_dir.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Missing base directory to resolve relative shell path '{}'",
+                        raw
+                    )
+                })?;
+                workspace.join(path)
+            }
+        }
+        None => {
+            let workspace = default_dir.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Missing workspace_dir (or current directory) for shell path default"
+                )
+            })?;
+            workspace.to_path_buf()
+        }
+    };
+
+    let effective = std::fs::canonicalize(&unresolved).map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to resolve shell path '{}': {}",
+            unresolved.display(),
+            e
+        )
+    })?;
+
+    if !effective.is_dir() {
+        anyhow::bail!("Shell path '{}' is not a directory", effective.display());
+    }
+
+    Ok(effective)
+}
+
 #[async_trait]
 impl Tool for ShellTool {
     fn name(&self) -> &str {
@@ -55,7 +104,7 @@ impl Tool for ShellTool {
     }
 
     fn description(&self) -> &str {
-        "Execute a shell command and return its output. Commands run from the workspace root."
+        "Execute a shell command and return its output. Use `path` to choose the working directory (do not use `cd ...` or `git -C ...` for that)."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -64,7 +113,11 @@ impl Tool for ShellTool {
             "properties": {
                 "command": {
                     "type": "string",
-                    "description": "The shell command to execute"
+                    "description": "The shell command to execute. Keep directory selection out of command text."
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Execution directory. If omitted, workspace_dir is used. Prefer this over `cd ...` or `git -C ...`."
                 }
             },
             "required": ["command"]
@@ -76,14 +129,35 @@ impl Tool for ShellTool {
             .get("command")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'command' argument"))?;
+        let requested_path = match args.get("path") {
+            Some(value) => Some(
+                value
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("'path' must be a string"))?,
+            ),
+            None => None,
+        };
+        let effective_path =
+            match resolve_effective_path(self.workspace_dir.as_deref(), requested_path) {
+                Ok(path) => path,
+                Err(err) => {
+                    return Ok(ToolResult {
+                        success: false,
+                        output: String::new(),
+                        error: Some(err.to_string()),
+                    });
+                }
+            };
 
-        tracing::info!("Executing shell command: {}", command);
+        tracing::info!(
+            "Executing shell command: {} (path: {})",
+            command,
+            effective_path.display()
+        );
 
         let mut cmd = Command::new("sh");
         cmd.arg("-c").arg(command);
-        if let Some(workspace_dir) = &self.workspace_dir {
-            cmd.current_dir(workspace_dir);
-        }
+        cmd.current_dir(&effective_path);
 
         let result =
             tokio::time::timeout(Duration::from_secs(self.timeout_secs), cmd.output()).await;
@@ -169,6 +243,7 @@ mod tests {
         let tool = ShellTool::new(30);
         let schema = tool.parameters_schema();
         assert!(schema["properties"]["command"].is_object());
+        assert!(schema["properties"]["path"].is_object());
         assert!(schema["required"]
             .as_array()
             .expect("required should be an array")
@@ -268,6 +343,100 @@ mod tests {
         assert_eq!(actual, expected);
 
         let _ = tokio::fs::remove_dir_all(workspace).await;
+    }
+
+    #[tokio::test]
+    async fn shell_uses_relative_path_argument_from_workspace() {
+        let workspace = make_temp_dir("workspace_with_relative_path_arg");
+        let nested = workspace.join("nested");
+        tokio::fs::create_dir_all(&nested).await.unwrap();
+
+        let tool = ShellTool::with_workspace_dir(30, workspace.clone());
+        let result = tool
+            .execute(serde_json::json!({
+                "command": "pwd",
+                "path": "nested"
+            }))
+            .await
+            .expect("pwd should succeed");
+
+        assert!(result.success);
+        let output = result.output.trim();
+        let actual = tokio::fs::canonicalize(PathBuf::from(output))
+            .await
+            .unwrap();
+        let expected = tokio::fs::canonicalize(&nested).await.unwrap();
+        assert_eq!(actual, expected);
+
+        let _ = tokio::fs::remove_dir_all(workspace).await;
+    }
+
+    #[tokio::test]
+    async fn shell_uses_absolute_path_argument() {
+        let absolute = make_temp_dir("workspace_absolute_path_arg");
+        tokio::fs::create_dir_all(&absolute).await.unwrap();
+
+        let tool = ShellTool::new(30);
+        let result = tool
+            .execute(serde_json::json!({
+                "command": "pwd",
+                "path": absolute.to_string_lossy()
+            }))
+            .await
+            .expect("pwd should succeed");
+
+        assert!(result.success);
+        let output = result.output.trim();
+        let actual = tokio::fs::canonicalize(PathBuf::from(output))
+            .await
+            .unwrap();
+        let expected = tokio::fs::canonicalize(&absolute).await.unwrap();
+        assert_eq!(actual, expected);
+
+        let _ = tokio::fs::remove_dir_all(absolute).await;
+    }
+
+    #[tokio::test]
+    async fn shell_empty_path_falls_back_to_workspace_dir() {
+        let workspace = make_temp_dir("workspace_empty_path_fallback");
+        tokio::fs::create_dir_all(&workspace).await.unwrap();
+
+        let tool = ShellTool::with_workspace_dir(30, workspace.clone());
+        let result = tool
+            .execute(serde_json::json!({
+                "command": "pwd",
+                "path": "   "
+            }))
+            .await
+            .expect("pwd should succeed");
+
+        assert!(result.success);
+        let output = result.output.trim();
+        let actual = tokio::fs::canonicalize(PathBuf::from(output))
+            .await
+            .unwrap();
+        let expected = tokio::fs::canonicalize(&workspace).await.unwrap();
+        assert_eq!(actual, expected);
+
+        let _ = tokio::fs::remove_dir_all(workspace).await;
+    }
+
+    #[tokio::test]
+    async fn shell_fails_when_path_is_missing_or_invalid() {
+        let file_path = make_temp_dir("workspace_invalid_file_path");
+        tokio::fs::write(&file_path, "x").await.unwrap();
+        let tool = ShellTool::new(30);
+        let result = tool
+            .execute(serde_json::json!({
+                "command": "pwd",
+                "path": file_path.to_string_lossy()
+            }))
+            .await
+            .expect("invalid path should return tool result");
+        assert!(!result.success);
+        assert!(result.error.unwrap_or_default().contains("not a directory"));
+
+        let _ = tokio::fs::remove_file(file_path).await;
     }
 
     #[tokio::test]

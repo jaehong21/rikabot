@@ -8,6 +8,12 @@ use crate::skills::SkillsLoader;
 
 const DEFAULT_BOOTSTRAP_MAX_CHARS: usize = 20_000;
 const DEFAULT_BOOTSTRAP_TOTAL_MAX_CHARS: usize = 150_000;
+const TOOL_USAGE_GUIDANCE: &str = r#"# Tool Usage Guidance
+
+- For `shell` tool calls, use the `path` argument to select the working directory.
+- Do not change directories inside `command` (avoid `cd ... && ...`).
+- Do not use command-level directory flags when `path` can express the same thing (for example `git -C ...`).
+"#;
 
 const REQUIRED_BOOTSTRAP_FILES: [(&str, &str); 6] = [
     ("AGENTS.md", AGENTS_TEMPLATE),
@@ -96,6 +102,7 @@ impl PromptManager {
             sections.push(session_context);
         }
 
+        sections.push(TOOL_USAGE_GUIDANCE.to_string());
         sections.push(self.build_workspace_context());
         Ok(sections.join("\n\n---\n\n"))
     }
@@ -375,5 +382,17 @@ mod tests {
             .build_prompt_with_session(Some(&session))
             .expect("build prompt");
         assert!(!prompt.contains("# Session Context"));
+    }
+
+    #[test]
+    fn includes_shell_path_tool_guidance() {
+        let workspace = temp_workspace("tool_usage_guidance");
+        let manager = manager(&workspace, 20_000, 150_000);
+
+        let prompt = manager.build_prompt().expect("build prompt");
+        assert!(prompt.contains("# Tool Usage Guidance"));
+        assert!(prompt.contains("use the `path` argument"));
+        assert!(prompt.contains("avoid `cd ... && ...`"));
+        assert!(prompt.contains("`git -C ...`"));
     }
 }
