@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
-import { Settings2 } from "lucide-react";
+import { Puzzle, Server, Settings2, ShieldCheck } from "lucide-react";
 
 import {
   Command,
@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/command";
 import { useAppStore } from "@/context/app-store";
 import { cn } from "@/lib/utils";
+import type { SettingsSectionId } from "@/router";
 
 type CommandPaletteProps = {
   open: boolean;
@@ -36,11 +37,20 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
     handleOpenChange(false);
   };
 
-  const closeAndNavigate = (to?: "/" | "/settings" | "/threads"): void => {
+  const closeAndNavigate = (to?: "/" | "/threads"): void => {
     closeAndReset();
     if (to) {
       navigate({ to });
     }
+  };
+
+  const navigateSettingsSection = (section?: SettingsSectionId): void => {
+    closeAndReset();
+    if (section) {
+      navigate({ to: "/settings", search: { section } });
+      return;
+    }
+    navigate({ to: "/settings" });
   };
 
   return (
@@ -69,11 +79,41 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
                   value="go settings"
                   keywords={["preferences", "config", "options"]}
                   onSelect={() => {
-                    closeAndNavigate("/settings");
+                    navigateSettingsSection();
                   }}
                 >
                   <Settings2 className="h-4 w-4 shrink-0" />
                   <span>Go to settings</span>
+                </CommandItem>
+                <CommandItem
+                  value="go permissions"
+                  keywords={["permissions", "policies", "tooling"]}
+                  onSelect={() => {
+                    navigateSettingsSection("permissions");
+                  }}
+                >
+                  <ShieldCheck className="h-4 w-4 shrink-0" />
+                  <span>Go to permissions</span>
+                </CommandItem>
+                <CommandItem
+                  value="go skills"
+                  keywords={["skills", "extensions", "plugins", "functions"]}
+                  onSelect={() => {
+                    navigateSettingsSection("skills");
+                  }}
+                >
+                  <Puzzle className="h-4 w-4 shrink-0" />
+                  <span>Go to skills</span>
+                </CommandItem>
+                <CommandItem
+                  value="go mcp servers"
+                  keywords={["mcp", "servers", "connectors", "tools"]}
+                  onSelect={() => {
+                    navigateSettingsSection("mcp");
+                  }}
+                >
+                  <Server className="h-4 w-4 shrink-0" />
+                  <span>Go to MCP servers</span>
                 </CommandItem>
               </CommandGroup>
 
