@@ -16,3 +16,9 @@ repos:
         entry: "bash -c 'cd web && bun run format'"
         files: ^web/
         pass_filenames: false
+      - id: bun-format-e2e
+        name: bun run format (e2e)
+        language: system
+        entry: "bash -c 'cd tests/e2e && bun run format'"
+        files: ^tests/e2e/
+        pass_filenames: false

@@ -2,7 +2,9 @@ import { expect, test } from "@playwright/test";
 
 import { sendFromComposer } from "./helpers";
 
-test("handles thread lifecycle slash commands through backend websocket", async ({ page }) => {
+test("handles thread lifecycle slash commands through backend websocket", async ({
+  page,
+}) => {
   const suffix = String(Date.now()).slice(-6);
   const createdThread = `e2e-${suffix}`;
   const renamedThread = `ren-${suffix}`;
@@ -19,5 +21,7 @@ test("handles thread lifecycle slash commands through backend websocket", async 
   await expect(page.getByText("Welcome to Rika")).toBeVisible();
 
   await sendFromComposer(page, "/delete");
-  await expect(page.getByRole("button", { name: renamedThread })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: renamedThread })).toHaveCount(
+    0,
+  );
 });

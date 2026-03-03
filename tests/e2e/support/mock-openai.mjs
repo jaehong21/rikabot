@@ -33,7 +33,9 @@ function parseBody(req) {
 }
 
 function buildMockResponse(requestBody) {
-  const messages = Array.isArray(requestBody?.messages) ? requestBody.messages : [];
+  const messages = Array.isArray(requestBody?.messages)
+    ? requestBody.messages
+    : [];
 
   const lastUserMessage = [...messages]
     .reverse()
@@ -46,7 +48,9 @@ function buildMockResponse(requestBody) {
     );
 
   const promptText = lastUserMessage?.content?.trim() ?? "";
-  const responseText = promptText ? `mock-e2e: ${promptText}` : "mock-e2e: empty";
+  const responseText = promptText
+    ? `mock-e2e: ${promptText}`
+    : "mock-e2e: empty";
 
   return {
     id: "chatcmpl-e2e",
@@ -81,7 +85,10 @@ const server = http.createServer(async (req, res) => {
   }
 
   const path = req.url ?? "";
-  if (req.method === "POST" && (path === "/chat/completions" || path === "/v1/chat/completions")) {
+  if (
+    req.method === "POST" &&
+    (path === "/chat/completions" || path === "/v1/chat/completions")
+  ) {
     try {
       const body = await parseBody(req);
       sendJson(res, 200, buildMockResponse(body));
@@ -98,7 +105,9 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
-  process.stdout.write(`Mock OpenAI server listening on http://${HOST}:${PORT}\n`);
+  process.stdout.write(
+    `Mock OpenAI server listening on http://${HOST}:${PORT}\n`,
+  );
 });
 
 function shutdown() {

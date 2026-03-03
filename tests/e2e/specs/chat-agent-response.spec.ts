@@ -2,7 +2,9 @@ import { expect, test } from "@playwright/test";
 
 import { sendFromComposer } from "./helpers";
 
-test("renders assistant response from real backend agent flow", async ({ page }) => {
+test("renders assistant response from real backend agent flow", async ({
+  page,
+}) => {
   const userPrompt = `e2e-message-${Date.now()}`;
   const expectedAssistant = `mock-e2e: ${userPrompt}`;
 

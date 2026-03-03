@@ -1,6 +1,8 @@
 import { expect, test } from "@playwright/test";
 
-test("persists permissions rules through frontend and backend", async ({ page }) => {
+test("persists permissions rules through frontend and backend", async ({
+  page,
+}) => {
   const allowRule = `shell(command:echo e2e-${Date.now()} *)`;
 
   await page.goto("/settings?section=permissions");
@@ -18,5 +20,7 @@ test("persists permissions rules through frontend and backend", async ({ page })
 
   await page.reload();
 
-  await expect(page.getByPlaceholder("shell(command:git status *)")).toHaveValue(allowRule);
+  await expect(
+    page.getByPlaceholder("shell(command:git status *)"),
+  ).toHaveValue(allowRule);
 });

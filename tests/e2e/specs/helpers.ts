@@ -1,6 +1,9 @@
 import { expect, type Page } from "@playwright/test";
 
-export async function sendFromComposer(page: Page, text: string): Promise<void> {
+export async function sendFromComposer(
+  page: Page,
+  text: string,
+): Promise<void> {
   const composer = page.locator("textarea").first();
   const sendButton = page.getByRole("button", { name: "Send message" });
 
