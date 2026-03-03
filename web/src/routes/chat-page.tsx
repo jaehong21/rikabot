@@ -1,5 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUp, ChevronDown, ChevronRight, Square } from "lucide-react";
+import {
+  ArrowUp,
+  ChevronDown,
+  ChevronRight,
+  Check,
+  Copy,
+  Square,
+} from "lucide-react";
 
 import { useAppStore } from "@/context/app-store";
 import { renderMarkdown } from "@/lib/markdown";
@@ -187,11 +194,13 @@ export function ChatPage() {
   const [draft, setDraft] = useState("");
   const [activeSlashSuggestionIndex, setActiveSlashSuggestionIndex] =
     useState(-1);
+  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [openToolGroups, setOpenToolGroups] = useState<Record<string, boolean>>(
     {},
   );
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const copyResetTimeoutRef = useRef<number | null>(null);
   const scrollStateRef = useRef<{
     initialized: boolean;
     sessionId: string | null;
@@ -335,6 +344,34 @@ export function ChatPage() {
     });
   };
 
+  const copyText = async (text: string): Promise<void> => {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand("copy");
+      document.body.removeChild(textarea);
+    }
+  };
+
+  const handleCopy = (id: string, text: string): void => {
+    void copyText(text).then(() => {
+      if (copyResetTimeoutRef.current !== null) {
+        window.clearTimeout(copyResetTimeoutRef.current);
+      }
+      setCopiedMessageId(id);
+      copyResetTimeoutRef.current = window.setTimeout(() => {
+        setCopiedMessageId((current) => (current === id ? null : current));
+      }, 1200);
+    });
+  };
+
   const groupedEntries = useMemo(() => {
     const groups: Array<
       | { kind: "message"; entry: MessageEntry }
@@ -381,7 +418,10 @@ export function ChatPage() {
                 const entry = item.entry;
                 if (entry.role === "user") {
                   return (
-                    <div key={entry.id} className="flex justify-end">
+                    <div
+                      key={entry.id}
+                      className="flex flex-col items-end gap-1"
+                    >
                       <article
                         className={cn(
                           "inline-block w-fit max-w-[85%] rounded-2xl bg-userbubble px-4 py-3",
@@ -395,24 +435,57 @@ export function ChatPage() {
                           }}
                         />
                       </article>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6 text-muted-foreground/60 transition-colors hover:text-foreground/90"
+                        onClick={() => {
+                          handleCopy(entry.id, entry.text);
+                        }}
+                        aria-label="Copy user message"
+                      >
+                        {copiedMessageId === entry.id ? (
+                          <Check className="h-3.5 w-3.5" />
+                        ) : (
+                          <Copy className="h-3.5 w-3.5" />
+                        )}
+                      </Button>
                     </div>
                   );
                 }
 
                 return (
-                  <article
-                    key={entry.id}
-                    className={cn(
-                      "message-prose max-w-none text-[15px] leading-6 text-foreground",
-                      entry.error && "text-primary",
-                    )}
-                  >
-                    <div
-                      dangerouslySetInnerHTML={{
-                        __html: renderMarkdown(entry.text),
+                  <div key={entry.id} className="flex flex-col gap-1">
+                    <article
+                      className={cn(
+                        "message-prose max-w-none text-[15px] leading-6 text-foreground",
+                        entry.error && "text-primary",
+                      )}
+                    >
+                      <div
+                        dangerouslySetInnerHTML={{
+                          __html: renderMarkdown(entry.text),
+                        }}
+                      />
+                    </article>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="h-6 w-6 text-muted-foreground/60 transition-colors hover:text-foreground/90"
+                      onClick={() => {
+                        handleCopy(entry.id, entry.text);
                       }}
-                    />
-                  </article>
+                      aria-label="Copy assistant response"
+                    >
+                      {copiedMessageId === entry.id ? (
+                        <Check className="h-3.5 w-3.5" />
+                      ) : (
+                        <Copy className="h-3.5 w-3.5" />
+                      )}
+                    </Button>
+                  </div>
                 );
               }
 
