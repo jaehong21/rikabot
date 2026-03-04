@@ -37,13 +37,6 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
     handleOpenChange(false);
   };
 
-  const closeAndNavigate = (to?: "/" | "/threads"): void => {
-    closeAndReset();
-    if (to) {
-      navigate({ to });
-    }
-  };
-
   const navigateSettingsSection = (section?: SettingsSectionId): void => {
     closeAndReset();
     if (section) {

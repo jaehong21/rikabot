@@ -26,3 +26,15 @@ export async function openCommandPalette(page: Page): Promise<void> {
     page.getByPlaceholder("Search sessions and routes..."),
   ).toBeVisible();
 }
+
+export function waitForApiResponse(
+  page: Page,
+  method: string,
+  pathFragment: string,
+) {
+  return page.waitForResponse(
+    (response) =>
+      response.request().method() === method &&
+      response.url().includes(pathFragment),
+  );
+}

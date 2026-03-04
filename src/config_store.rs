@@ -24,12 +24,17 @@ impl ConfigStore {
                 .map_err(|e| anyhow::anyhow!("failed to parse config TOML: {}", e))?
         };
 
-        if !doc["permissions"].is_table() {
+        if !doc.get("permissions").is_some_and(|item| item.is_table()) {
             doc["permissions"] = Item::Table(Table::new());
         }
         doc["permissions"]["enabled"] = value(permissions.enabled);
 
-        if !doc["permissions"]["tools"].is_table() {
+        let has_tools_table = doc
+            .get("permissions")
+            .and_then(Item::as_table_like)
+            .and_then(|table| table.get("tools"))
+            .is_some_and(Item::is_table);
+        if !has_tools_table {
             doc["permissions"]["tools"] = Item::Table(Table::new());
         }
 

@@ -168,45 +168,7 @@ export type ServerEvent =
   | { type: "error"; message?: string }
   | {
       type: "thread_list";
-      current_session_id?: string;
       sessions?: ThreadRecord[];
-    }
-  | {
-      type: "thread_created";
-      current_session_id?: string;
-      sessions?: ThreadRecord[];
-      history?: HistoryMessage[];
-    }
-  | {
-      type: "thread_renamed";
-      current_session_id?: string;
-      sessions?: ThreadRecord[];
-    }
-  | {
-      type: "thread_switched";
-      session_id?: string;
-      current_session_id?: string;
-      sessions?: ThreadRecord[];
-      history?: HistoryMessage[];
-    }
-  | {
-      type: "thread_cleared";
-      session_id?: string;
-      current_session_id?: string;
-      sessions?: ThreadRecord[];
-      history?: HistoryMessage[];
-    }
-  | {
-      type: "thread_deleted";
-      deleted_session_id?: string;
-      current_session_id?: string;
-      sessions?: ThreadRecord[];
-      history?: HistoryMessage[];
-    }
-  | {
-      type: "permissions_state";
-      permissions?: PermissionsState;
-      validation_errors?: string[];
     }
   | {
       type: "permissions_updated";
@@ -215,14 +177,48 @@ export type ServerEvent =
   | {
       type: "mcp_status";
       mcp?: McpStatusSnapshot;
-    }
-  | {
-      type: "skills_status";
-      skills?: SkillsStatusSnapshot;
-      validation_errors?: string[];
-    }
-  | {
-      type: "skill_content";
-      path?: string;
-      content?: string;
     };
+
+export type ThreadsResponse = {
+  sessions: ThreadRecord[];
+};
+
+export type CreateThreadResponse = {
+  session: ThreadRecord;
+  sessions: ThreadRecord[];
+};
+
+export type RenameThreadResponse = {
+  session: ThreadRecord;
+  sessions: ThreadRecord[];
+};
+
+export type ThreadMessagesResponse = {
+  session_id: string;
+  history: HistoryMessage[];
+};
+
+export type DeleteThreadResponse = {
+  deleted_session_id: string;
+  fallback_session_id: string;
+  sessions: ThreadRecord[];
+};
+
+export type PermissionsResponse = {
+  permissions: PermissionsState;
+};
+
+export type SkillsResponse = {
+  skills: SkillsStatusSnapshot;
+};
+
+export type SkillContentResponse = {
+  path: string;
+  content: string;
+};
+
+export type UpdateSkillContentResponse = {
+  skills: SkillsStatusSnapshot;
+  path: string;
+  content: string;
+};

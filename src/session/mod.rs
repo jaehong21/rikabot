@@ -177,6 +177,20 @@ impl SessionManager {
         Ok((self.index.sessions[idx].clone(), Vec::new()))
     }
 
+    pub fn clear_session(&mut self, session_id: &str) -> Result<(SessionRecord, Vec<ChatMessage>)> {
+        validate_session_id(session_id)?;
+        let idx = self
+            .find_session_index(session_id)
+            .ok_or_else(|| anyhow::anyhow!("session not found: {}", session_id))?;
+
+        self.create_or_truncate_session_file(session_id)?;
+        self.index.sessions[idx].message_count = 0;
+        self.index.sessions[idx].updated_at = now_rfc3339();
+        self.save_index()?;
+
+        Ok((self.index.sessions[idx].clone(), Vec::new()))
+    }
+
     pub fn delete_session(&mut self, session_id: &str) -> Result<SessionDeleteResult> {
         validate_session_id(session_id)?;
         let idx = self

@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { openCommandPalette, runSlash } from "./helpers";
+import { openCommandPalette, runSlash, waitForApiResponse } from "./helpers";
 
 test("navigates settings sections from command palette", async ({ page }) => {
   await page.goto("/");
@@ -35,11 +35,14 @@ test("switches active session from command palette", async ({ page }) => {
   await page
     .getByPlaceholder("Search sessions and routes...")
     .fill(firstThread);
-  await page
-    .getByRole("dialog")
-    .getByText(firstThread, { exact: true })
-    .first()
-    .click();
+  await Promise.all([
+    waitForApiResponse(page, "GET", "/api/threads/"),
+    page
+      .getByRole("dialog")
+      .getByText(firstThread, { exact: true })
+      .first()
+      .click(),
+  ]);
 
   await runSlash(page, `/rename ${firstThread}-active`);
 

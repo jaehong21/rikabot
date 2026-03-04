@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { runSlash } from "./helpers";
+import { runSlash, waitForApiResponse } from "./helpers";
 
 test("switches thread from thread explorer route", async ({ page }) => {
   const suffix = String(Date.now()).slice(-6);
@@ -18,7 +18,10 @@ test("switches thread from thread explorer route", async ({ page }) => {
   const targetCard = page.locator("main article, main div").filter({
     hasText: firstThread,
   });
-  await targetCard.getByRole("button", { name: "Open Thread" }).first().click();
+  await Promise.all([
+    waitForApiResponse(page, "GET", "/api/threads/"),
+    targetCard.getByRole("button", { name: "Open Thread" }).first().click(),
+  ]);
 
   await page.goto("/");
   await runSlash(page, `/rename ${renamed}`);

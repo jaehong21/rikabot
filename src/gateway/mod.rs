@@ -1,3 +1,4 @@
+pub mod rest;
 pub mod ws;
 
 use std::collections::HashSet;
@@ -71,6 +72,25 @@ pub struct AppState {
     pub mcp_runtime: Arc<McpRuntime>,
 }
 
+pub(crate) async fn apply_permissions_update(
+    state: &AppState,
+    next: PermissionsConfig,
+) -> anyhow::Result<()> {
+    let engine = PermissionEngine::from_config(&next)?;
+    state.config_store.save_permissions(&next)?;
+
+    {
+        let mut permissions = state.permissions_config.write().await;
+        *permissions = next.clone();
+    }
+    {
+        let mut permission_engine = state.permission_engine.write().await;
+        *permission_engine = engine;
+    }
+
+    Ok(())
+}
+
 /// Health check endpoint.
 async fn health_handler() -> impl IntoResponse {
     (StatusCode::OK, "ok")
@@ -128,6 +148,7 @@ fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health_handler))
         .route("/ws", get(ws::ws_handler))
+        .nest("/api", rest::router())
         .fallback(get(static_handler))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,

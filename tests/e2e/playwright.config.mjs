@@ -52,7 +52,7 @@ export default defineConfig({
       url: "http://127.0.0.1:13000",
       env: {
         RIKA_DEV_MODE: "1",
-        RIKA_DEV_BACKEND_WS_HOSTPORT: "127.0.0.1:14728",
+        RIKA_DEV_BACKEND_HOSTPORT: "127.0.0.1:14728",
       },
       reuseExistingServer: false,
       timeout: 120_000,

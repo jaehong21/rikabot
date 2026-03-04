@@ -15,13 +15,12 @@ use serde_json::Value;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::agent::{AgentEvent, ToolApprovalDecision, ToolApprovalDecisionKind};
-use crate::config::{PermissionsConfig, ToolPermissionsConfig};
+use crate::config::PermissionsConfig;
 use crate::gateway::{ActiveRunState, AppState};
 use crate::mcp_runtime::McpStatusSnapshot;
 use crate::permissions::PermissionEngine;
 use crate::prompt::SessionPromptContext;
 use crate::providers::ChatMessage;
-use crate::skills;
 
 /// Inbound message from the client.
 #[derive(Debug, Clone, Deserialize)]
@@ -33,21 +32,11 @@ struct ClientMessage {
     #[serde(default)]
     session_id: Option<String>,
     #[serde(default)]
-    display_name: Option<String>,
-    #[serde(default)]
-    enabled: Option<bool>,
-    #[serde(default)]
-    allow: Option<Vec<String>>,
-    #[serde(default)]
-    deny: Option<Vec<String>>,
-    #[serde(default)]
     request_id: Option<String>,
     #[serde(default)]
     decision: Option<ToolApprovalDecisionKind>,
     #[serde(default)]
     allow_rule: Option<String>,
-    #[serde(default)]
-    path: Option<String>,
 }
 
 struct RunOutcome {
@@ -86,36 +75,15 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     let mut thread_event_rx = state.thread_events.subscribe();
     let mut mcp_status_rx = state.mcp_runtime.subscribe();
 
-    let (mut current_session_id, mut history) = match hydrate_current_thread(&state).await {
-        Ok((sid, initial_history)) => {
-            if send_thread_list(&mut ws_sink, &state).await.is_err() {
-                return;
-            }
-            if send_thread_switched(&mut ws_sink, &sid, &initial_history)
-                .await
-                .is_err()
-            {
-                return;
-            }
-            if send_permissions_state(&mut ws_sink, &state, None)
-                .await
-                .is_err()
-            {
-                return;
-            }
+    let mut current_session_id = match hydrate_current_thread(&state).await {
+        Ok((sid, _initial_history)) => {
             if send_mcp_status(&mut ws_sink, state.mcp_runtime.snapshot())
                 .await
                 .is_err()
             {
                 return;
             }
-            if send_skills_status(&mut ws_sink, &state, None)
-                .await
-                .is_err()
-            {
-                return;
-            }
-            (sid, initial_history)
+            sid
         }
         Err(err) => {
             let _ = send_error(
@@ -126,6 +94,10 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
             return;
         }
     };
+
+    if let Some(active_sid) = active_run_session_id(&state).await {
+        current_session_id = active_sid;
+    }
 
     if let Err(err) = attach_to_active_run(
         &state,
@@ -181,7 +153,16 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                             _ => continue,
                         };
 
-                        let run_input = match load_session_run_input(&state, &current_session_id).await {
+                        let target_session_id = client_msg
+                            .session_id
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|sid| !sid.is_empty())
+                            .unwrap_or(current_session_id.as_str())
+                            .to_string();
+                        current_session_id = target_session_id.clone();
+
+                        let run_input = match load_session_run_input(&state, &target_session_id).await {
                             Ok(input) => input,
                             Err(err) => {
                                 let _ = send_error(
@@ -196,7 +177,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                         match spawn_active_run(
                             &state,
                             run_signal_tx.clone(),
-                            &current_session_id,
+                            &target_session_id,
                             &run_input.history,
                             &run_input.session_display_name,
                             content,
@@ -214,48 +195,15 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                         }
                     }
                     "kill_switch" => {
-                        if stop_active_run(&state, "user_cancelled", Some(&current_session_id)).await {
+                        let requested_session = client_msg
+                            .session_id
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|sid| !sid.is_empty())
+                            .unwrap_or(current_session_id.as_str());
+                        if stop_active_run(&state, "user_cancelled", Some(requested_session)).await {
                         } else {
-                            let _ = send_stopped(&mut ws_sink, "no_active_run", Some(&current_session_id)).await;
-                        }
-                    }
-                    "permissions_get" => {
-                        if let Err(err) = send_permissions_state(&mut ws_sink, &state, None).await {
-                            tracing::debug!("Failed to send permissions state: {}", err);
-                            break;
-                        }
-                    }
-                    "skills_get" => {
-                        if let Err(err) = send_skills_status(&mut ws_sink, &state, None).await {
-                            tracing::debug!("Failed to send skills status: {}", err);
-                            break;
-                        }
-                    }
-                    "skills_read" => {
-                        if let Err(err) = handle_skills_read(&state, &client_msg, &mut ws_sink).await {
-                            let _ = send_error(
-                                &mut ws_sink,
-                                &format!("Failed to load skill content: {}", err),
-                            )
-                            .await;
-                        }
-                    }
-                    "skills_set" => {
-                        if let Err(err) = handle_skills_set(&state, &client_msg, &mut ws_sink).await {
-                            let _ = send_error(
-                                &mut ws_sink,
-                                &format!("Failed to update skill: {}", err),
-                            )
-                            .await;
-                        }
-                    }
-                    "permissions_set" => {
-                        if let Err(err) = handle_permissions_set(&state, &client_msg, &mut ws_sink).await {
-                            let _ = send_error(
-                                &mut ws_sink,
-                                &format!("Failed to update permissions: {}", err),
-                            )
-                            .await;
+                            let _ = send_stopped(&mut ws_sink, "no_active_run", Some(requested_session)).await;
                         }
                     }
                     "tool_approval_decision" => {
@@ -270,75 +218,11 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                         }
                     }
                     _ => {
-                        if has_active_run(&state).await && is_thread_mutating_command(&client_msg.msg_type) {
-                            let _ = send_error(
-                                &mut ws_sink,
-                                "Cannot modify threads while a run is active. Stop the run first.",
-                            )
-                            .await;
-                            continue;
-                        }
-
-                        match handle_thread_command(
-                            &state,
-                            &client_msg,
-                            &mut current_session_id,
-                            &mut history,
+                        let _ = send_error(
+                            &mut ws_sink,
+                            &format!("Unsupported WebSocket message type: {}", client_msg.msg_type),
                         )
-                        .await
-                        {
-                            Ok(Some(event)) => {
-                                let switched_to = event
-                                    .get("type")
-                                    .and_then(|v| v.as_str())
-                                    .filter(|t| *t == "thread_switched")
-                                    .and_then(|_| event.get("session_id"))
-                                    .and_then(|v| v.as_str())
-                                    .map(str::to_string);
-
-                                if ws_sink
-                                    .send(Message::text(event.to_string()))
-                                    .await
-                                .is_err()
-                                {
-                                    break;
-                                }
-
-                                if is_thread_mutating_event(&event) {
-                                    if let Err(err) = broadcast_reloaded_thread_list(&state).await {
-                                        tracing::warn!(
-                                            "failed to broadcast thread mutation update: {}",
-                                            err
-                                        );
-                                    }
-                                }
-
-                                if let Some(switched_session_id) = switched_to {
-                                    if let Err(err) = attach_to_active_run(
-                                        &state,
-                                        &switched_session_id,
-                                        run_signal_tx.clone(),
-                                        &mut ws_sink,
-                                    )
-                                    .await
-                                    {
-                                        let _ = send_error(
-                                            &mut ws_sink,
-                                            &format!(
-                                                "Failed to attach run after thread switch: {}",
-                                                err
-                                            ),
-                                        )
-                                        .await;
-                                        break;
-                                    }
-                                }
-                            }
-                            Ok(None) => {}
-                            Err(err) => {
-                                let _ = send_error(&mut ws_sink, &err.to_string()).await;
-                            }
-                        }
+                        .await;
                     }
                 }
             }
@@ -675,6 +559,11 @@ async fn has_active_run(state: &AppState) -> bool {
     runs.active.is_some()
 }
 
+async fn active_run_session_id(state: &AppState) -> Option<String> {
+    let runs = state.runs.lock().await;
+    runs.active.as_ref().map(|active| active.session_id.clone())
+}
+
 async fn attach_to_active_run(
     state: &AppState,
     session_id: &str,
@@ -781,22 +670,6 @@ async fn send_thread_list(
         .map_err(Into::into)
 }
 
-async fn send_thread_switched(
-    ws_sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
-    session_id: &str,
-    history: &[ChatMessage],
-) -> anyhow::Result<()> {
-    let payload = serde_json::json!({
-        "type": "thread_switched",
-        "session_id": session_id,
-        "history": history,
-    });
-    ws_sink
-        .send(Message::text(payload.to_string()))
-        .await
-        .map_err(Into::into)
-}
-
 async fn send_error(
     ws_sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
     message: &str,
@@ -823,28 +696,6 @@ async fn send_stopped(
             })
             .to_string(),
         ))
-        .await
-        .map_err(Into::into)
-}
-
-async fn send_permissions_state(
-    ws_sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
-    state: &AppState,
-    validation_errors: Option<Vec<String>>,
-) -> anyhow::Result<()> {
-    let permissions = {
-        let current = state.permissions_config.read().await;
-        current.clone()
-    };
-
-    let payload = serde_json::json!({
-        "type": "permissions_state",
-        "permissions": permissions,
-        "validation_errors": validation_errors.unwrap_or_default(),
-    });
-
-    ws_sink
-        .send(Message::text(payload.to_string()))
         .await
         .map_err(Into::into)
 }
@@ -877,105 +728,6 @@ async fn send_mcp_status(
         .send(Message::text(payload.to_string()))
         .await
         .map_err(Into::into)
-}
-
-async fn send_skills_status(
-    ws_sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
-    state: &AppState,
-    validation_errors: Option<Vec<String>>,
-) -> anyhow::Result<()> {
-    let skills_dir = state.prompt_manager.workspace_dir().join("skills");
-    let snapshot =
-        skills::build_skills_status_snapshot(&skills_dir, state.prompt_manager.skills_enabled());
-    let payload = serde_json::json!({
-        "type": "skills_status",
-        "skills": snapshot,
-        "validation_errors": validation_errors.unwrap_or_default(),
-    });
-
-    ws_sink
-        .send(Message::text(payload.to_string()))
-        .await
-        .map_err(Into::into)
-}
-
-async fn send_skill_content(
-    ws_sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
-    path: &str,
-    content: &str,
-) -> anyhow::Result<()> {
-    let payload = serde_json::json!({
-        "type": "skill_content",
-        "path": path,
-        "content": content,
-    });
-
-    ws_sink
-        .send(Message::text(payload.to_string()))
-        .await
-        .map_err(Into::into)
-}
-
-async fn handle_skills_read(
-    state: &AppState,
-    client_msg: &ClientMessage,
-    ws_sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
-) -> anyhow::Result<()> {
-    let path = required_field(client_msg.path.as_deref(), "path")?;
-    let skills_dir = state.prompt_manager.workspace_dir().join("skills");
-    let (resolved_path, content) = skills::read_skill_file(&skills_dir, path)?;
-    send_skill_content(ws_sink, &resolved_path.display().to_string(), &content).await
-}
-
-async fn handle_skills_set(
-    state: &AppState,
-    client_msg: &ClientMessage,
-    ws_sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
-) -> anyhow::Result<()> {
-    let path = required_field(client_msg.path.as_deref(), "path")?;
-    let content = client_msg
-        .content
-        .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("missing required field 'content'"))?;
-
-    let skills_dir = state.prompt_manager.workspace_dir().join("skills");
-    if let Err(err) = skills::write_skill_file(&skills_dir, path, content) {
-        send_skills_status(ws_sink, state, Some(vec![err.to_string()])).await?;
-        return Ok(());
-    }
-
-    send_skills_status(ws_sink, state, None).await?;
-    let (resolved_path, latest_content) = skills::read_skill_file(&skills_dir, path)?;
-    send_skill_content(
-        ws_sink,
-        &resolved_path.display().to_string(),
-        &latest_content,
-    )
-    .await
-}
-
-async fn handle_permissions_set(
-    state: &AppState,
-    client_msg: &ClientMessage,
-    ws_sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
-) -> anyhow::Result<()> {
-    let enabled = client_msg
-        .enabled
-        .ok_or_else(|| anyhow::anyhow!("missing required field 'enabled'"))?;
-    let allow = sanitize_rules(client_msg.allow.as_ref());
-    let deny = sanitize_rules(client_msg.deny.as_ref());
-
-    let next = PermissionsConfig {
-        enabled,
-        tools: ToolPermissionsConfig { allow, deny },
-    };
-
-    if let Err(err) = apply_permissions_update(state, next.clone()).await {
-        send_permissions_state(ws_sink, state, Some(vec![err.to_string()])).await?;
-        return Ok(());
-    }
-
-    send_permissions_updated(ws_sink, &next).await
 }
 
 async fn handle_tool_approval_decision(
@@ -1059,390 +811,9 @@ async fn apply_permissions_update(state: &AppState, next: PermissionsConfig) -> 
     Ok(())
 }
 
-fn sanitize_rules(raw: Option<&Vec<String>>) -> Vec<String> {
-    let Some(raw) = raw else {
-        return Vec::new();
-    };
-
-    raw.iter()
-        .map(|rule| rule.trim())
-        .filter(|rule| !rule.is_empty())
-        .map(ToString::to_string)
-        .collect()
-}
-
-async fn handle_thread_command(
-    state: &AppState,
-    client_msg: &ClientMessage,
-    current_session_id: &mut String,
-    history: &mut Vec<ChatMessage>,
-) -> anyhow::Result<Option<serde_json::Value>> {
-    match client_msg.msg_type.as_str() {
-        "thread_list" => Ok(Some(build_thread_list_payload(state, true).await?)),
-        "thread_create" => {
-            let mut sessions = state.sessions.lock().await;
-            sessions.reload_from_disk()?;
-            let created = sessions.create_session(client_msg.display_name.as_deref())?;
-            *current_session_id = created.id.clone();
-            history.clear();
-            Ok(Some(serde_json::json!({
-                "type": "thread_created",
-                "session": created,
-                "current_session_id": sessions.current_session_id(),
-                "sessions": sessions.list_sessions(),
-                "history": Vec::<ChatMessage>::new(),
-            })))
-        }
-        "thread_rename" => {
-            let sid = required_field(client_msg.session_id.as_deref(), "session_id")?;
-            let display_name = required_field(client_msg.display_name.as_deref(), "display_name")?;
-            let mut sessions = state.sessions.lock().await;
-            sessions.reload_from_disk()?;
-            let record = sessions.rename_session(sid, display_name)?;
-            Ok(Some(serde_json::json!({
-                "type": "thread_renamed",
-                "session": record,
-                "current_session_id": sessions.current_session_id(),
-                "sessions": sessions.list_sessions(),
-            })))
-        }
-        "thread_switch" => {
-            let sid = required_field(client_msg.session_id.as_deref(), "session_id")?;
-            let mut sessions = state.sessions.lock().await;
-            sessions.reload_from_disk()?;
-            let (_record, loaded_history) = sessions.switch_session(sid)?;
-            *current_session_id = sid.to_string();
-            *history = loaded_history.clone();
-            Ok(Some(serde_json::json!({
-                "type": "thread_switched",
-                "session_id": sid,
-                "history": loaded_history,
-                "current_session_id": sessions.current_session_id(),
-                "sessions": sessions.list_sessions(),
-            })))
-        }
-        "thread_clear" => {
-            let mut sessions = state.sessions.lock().await;
-            sessions.reload_from_disk()?;
-            let (record, loaded_history) = sessions.clear_current_session()?;
-            *current_session_id = record.id.clone();
-            *history = loaded_history.clone();
-            Ok(Some(serde_json::json!({
-                "type": "thread_cleared",
-                "session_id": record.id,
-                "history": loaded_history,
-                "current_session_id": sessions.current_session_id(),
-                "sessions": sessions.list_sessions(),
-            })))
-        }
-        "thread_delete" => {
-            let sid = required_field(client_msg.session_id.as_deref(), "session_id")?;
-            let mut sessions = state.sessions.lock().await;
-            sessions.reload_from_disk()?;
-            let deleted = sessions.delete_session(sid)?;
-            let loaded_history = sessions.load_history(&deleted.current_session_id)?;
-            *current_session_id = deleted.current_session_id.clone();
-            *history = loaded_history.clone();
-            Ok(Some(serde_json::json!({
-                "type": "thread_deleted",
-                "deleted_session_id": deleted.deleted_session_id,
-                "current_session_id": deleted.current_session_id,
-                "sessions": sessions.list_sessions(),
-                "history": loaded_history,
-            })))
-        }
-        _ => Ok(None),
-    }
-}
-
 fn required_field<'a>(value: Option<&'a str>, field_name: &str) -> anyhow::Result<&'a str> {
     value
         .map(str::trim)
         .filter(|v| !v.is_empty())
         .ok_or_else(|| anyhow::anyhow!("missing required field '{}'", field_name))
-}
-
-fn is_thread_mutating_command(msg_type: &str) -> bool {
-    matches!(
-        msg_type,
-        "thread_create" | "thread_rename" | "thread_switch" | "thread_clear" | "thread_delete"
-    )
-}
-
-fn is_thread_mutating_event(event: &Value) -> bool {
-    matches!(
-        event.get("type").and_then(|value| value.as_str()),
-        Some(
-            "thread_created"
-                | "thread_renamed"
-                | "thread_switched"
-                | "thread_cleared"
-                | "thread_deleted"
-        )
-    )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::fs;
-    use std::path::PathBuf;
-    use std::sync::Arc;
-    use uuid::Uuid;
-
-    use crate::agent::Agent;
-    use crate::config::{PermissionsConfig, ToolPermissionsConfig};
-    use crate::permissions::PermissionEngine;
-    use crate::prompt::{PromptLimits, PromptManager};
-    use crate::providers::Provider;
-    use crate::session::SessionManager;
-    use crate::tools::ToolRegistry;
-
-    struct DummyProvider;
-
-    #[async_trait::async_trait]
-    impl Provider for DummyProvider {
-        fn supports_native_tools(&self) -> bool {
-            false
-        }
-
-        async fn chat(
-            &self,
-            _messages: &[crate::providers::ChatMessage],
-            _tools: Option<&[crate::providers::ToolSpec]>,
-            _model: &str,
-            _temperature: f64,
-        ) -> anyhow::Result<crate::providers::ChatResponse> {
-            Ok(crate::providers::ChatResponse {
-                text: Some("ok".to_string()),
-                tool_calls: Vec::new(),
-                usage: None,
-            })
-        }
-    }
-
-    fn temp_workspace(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("rikabot-ws-test-{}-{}", name, Uuid::new_v4()));
-        fs::create_dir_all(&dir).expect("create temp workspace");
-        dir
-    }
-
-    fn test_state(workspace: &PathBuf) -> AppState {
-        let provider: Box<dyn Provider> = Box::new(DummyProvider);
-        let agent = Arc::new(Agent::new(
-            provider,
-            ToolRegistry::new(),
-            "model".to_string(),
-            0.1,
-        ));
-        let sessions = Arc::new(tokio::sync::Mutex::new(
-            SessionManager::new(workspace).expect("create sessions"),
-        ));
-        let prompt_manager = Arc::new(
-            PromptManager::new(
-                workspace,
-                false,
-                PromptLimits {
-                    bootstrap_max_chars: 20_000,
-                    bootstrap_total_max_chars: 150_000,
-                },
-            )
-            .expect("create prompt manager"),
-        );
-
-        AppState {
-            agent,
-            sessions,
-            prompt_manager,
-            runs: Arc::new(tokio::sync::Mutex::new(
-                crate::gateway::RunManager::default(),
-            )),
-            thread_events: tokio::sync::broadcast::channel(64).0,
-            permissions_config: Arc::new(tokio::sync::RwLock::new(PermissionsConfig {
-                enabled: false,
-                tools: ToolPermissionsConfig::default(),
-            })),
-            permission_engine: Arc::new(tokio::sync::RwLock::new(
-                PermissionEngine::disabled_allow_all(),
-            )),
-            config_store: Arc::new(crate::config_store::ConfigStore::new(
-                workspace.join("config.toml"),
-            )),
-            mcp_runtime: Arc::new(crate::mcp_runtime::McpRuntime::new(false, &[])),
-        }
-    }
-
-    #[tokio::test]
-    async fn thread_commands_create_rename_switch_clear_delete_update_state() {
-        let workspace = temp_workspace("thread-commands");
-        let state = test_state(&workspace);
-
-        let (mut current, mut history) = hydrate_current_thread(&state).await.expect("hydrate");
-
-        let created = handle_thread_command(
-            &state,
-            &ClientMessage {
-                msg_type: "thread_create".to_string(),
-                content: None,
-                session_id: None,
-                display_name: Some("alpha".to_string()),
-                enabled: None,
-                allow: None,
-                deny: None,
-                request_id: None,
-                decision: None,
-                allow_rule: None,
-                path: None,
-            },
-            &mut current,
-            &mut history,
-        )
-        .await
-        .expect("create")
-        .expect("event");
-        assert_eq!(created["type"], "thread_created");
-        let created_id = created["session"]["id"].as_str().expect("created id");
-
-        let renamed = handle_thread_command(
-            &state,
-            &ClientMessage {
-                msg_type: "thread_rename".to_string(),
-                content: None,
-                session_id: Some(created_id.to_string()),
-                display_name: Some("renamed".to_string()),
-                enabled: None,
-                allow: None,
-                deny: None,
-                request_id: None,
-                decision: None,
-                allow_rule: None,
-                path: None,
-            },
-            &mut current,
-            &mut history,
-        )
-        .await
-        .expect("rename")
-        .expect("event");
-        assert_eq!(renamed["type"], "thread_renamed");
-        assert_eq!(renamed["session"]["display_name"], "renamed");
-
-        let switched = handle_thread_command(
-            &state,
-            &ClientMessage {
-                msg_type: "thread_switch".to_string(),
-                content: None,
-                session_id: Some(created_id.to_string()),
-                display_name: None,
-                enabled: None,
-                allow: None,
-                deny: None,
-                request_id: None,
-                decision: None,
-                allow_rule: None,
-                path: None,
-            },
-            &mut current,
-            &mut history,
-        )
-        .await
-        .expect("switch")
-        .expect("event");
-        assert_eq!(switched["type"], "thread_switched");
-        assert_eq!(
-            switched["session_id"].as_str().expect("switched id"),
-            created_id
-        );
-
-        let cleared = handle_thread_command(
-            &state,
-            &ClientMessage {
-                msg_type: "thread_clear".to_string(),
-                content: None,
-                session_id: None,
-                display_name: None,
-                enabled: None,
-                allow: None,
-                deny: None,
-                request_id: None,
-                decision: None,
-                allow_rule: None,
-                path: None,
-            },
-            &mut current,
-            &mut history,
-        )
-        .await
-        .expect("clear")
-        .expect("event");
-        assert_eq!(cleared["type"], "thread_cleared");
-        assert_eq!(cleared["history"].as_array().expect("history").len(), 0);
-
-        let deleted = handle_thread_command(
-            &state,
-            &ClientMessage {
-                msg_type: "thread_delete".to_string(),
-                content: None,
-                session_id: Some(created_id.to_string()),
-                display_name: None,
-                enabled: None,
-                allow: None,
-                deny: None,
-                request_id: None,
-                decision: None,
-                allow_rule: None,
-                path: None,
-            },
-            &mut current,
-            &mut history,
-        )
-        .await
-        .expect("delete")
-        .expect("event");
-        assert_eq!(deleted["type"], "thread_deleted");
-        assert_eq!(deleted["deleted_session_id"], created_id);
-        assert_ne!(deleted["current_session_id"], created_id);
-    }
-
-    #[tokio::test]
-    async fn thread_commands_validate_required_fields() {
-        let workspace = temp_workspace("validation");
-        let state = test_state(&workspace);
-        let (mut current, mut history) = hydrate_current_thread(&state).await.expect("hydrate");
-
-        let err = handle_thread_command(
-            &state,
-            &ClientMessage {
-                msg_type: "thread_rename".to_string(),
-                content: None,
-                session_id: None,
-                display_name: Some("x".to_string()),
-                enabled: None,
-                allow: None,
-                deny: None,
-                request_id: None,
-                decision: None,
-                allow_rule: None,
-                path: None,
-            },
-            &mut current,
-            &mut history,
-        )
-        .await
-        .expect_err("should reject missing session_id");
-        assert!(err.to_string().contains("session_id"));
-    }
-
-    #[test]
-    fn thread_mutation_command_detection() {
-        assert!(is_thread_mutating_command("thread_create"));
-        assert!(is_thread_mutating_command("thread_rename"));
-        assert!(is_thread_mutating_command("thread_switch"));
-        assert!(is_thread_mutating_command("thread_clear"));
-        assert!(is_thread_mutating_command("thread_delete"));
-
-        assert!(!is_thread_mutating_command("thread_list"));
-        assert!(!is_thread_mutating_command("kill_switch"));
-        assert!(!is_thread_mutating_command("message"));
-    }
 }

@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { waitForApiResponse } from "./helpers";
 
 test("persists permissions rules through frontend and backend", async ({
   page,
@@ -15,7 +16,10 @@ test("persists permissions rules through frontend and backend", async ({
   await allowTextarea.fill(allowRule);
   await denyTextarea.fill("");
 
-  await page.getByRole("button", { name: "Save permissions" }).click();
+  await Promise.all([
+    waitForApiResponse(page, "PUT", "/api/settings/permissions"),
+    page.getByRole("button", { name: "Save permissions" }).click(),
+  ]);
   await expect(page.getByText("Saved at")).toBeVisible();
 
   await page.reload();
@@ -33,11 +37,17 @@ test("shows validation errors for malformed permission rules", async ({
   const allowTextarea = page.getByPlaceholder("shell(command:git status *)");
 
   await allowTextarea.fill("not-a-valid-rule");
-  await page.getByRole("button", { name: "Save permissions" }).click();
+  await Promise.all([
+    waitForApiResponse(page, "PUT", "/api/settings/permissions"),
+    page.getByRole("button", { name: "Save permissions" }).click(),
+  ]);
   await expect(page.getByText(/invalid rule/i)).toBeVisible();
 
   await allowTextarea.fill("shell(command:echo fixed *)");
-  await page.getByRole("button", { name: "Save permissions" }).click();
+  await Promise.all([
+    waitForApiResponse(page, "PUT", "/api/settings/permissions"),
+    page.getByRole("button", { name: "Save permissions" }).click(),
+  ]);
   await expect(page.getByText("Saved at")).toBeVisible();
   await expect(page.getByText(/invalid rule/i)).toHaveCount(0);
 });
@@ -54,7 +64,10 @@ test("persists permissions enabled switch and restores original value", async ({
   if (target !== original) {
     await enabledSwitch.click();
   }
-  await page.getByRole("button", { name: "Save permissions" }).click();
+  await Promise.all([
+    waitForApiResponse(page, "PUT", "/api/settings/permissions"),
+    page.getByRole("button", { name: "Save permissions" }).click(),
+  ]);
   await expect(page.getByText("Saved at")).toBeVisible();
   await expect(enabledSwitch).toHaveAttribute("aria-checked", target);
 
@@ -69,7 +82,10 @@ test("persists permissions enabled switch and restores original value", async ({
   if (current !== original) {
     await restoredSwitch.click();
   }
-  await page.getByRole("button", { name: "Save permissions" }).click();
+  await Promise.all([
+    waitForApiResponse(page, "PUT", "/api/settings/permissions"),
+    page.getByRole("button", { name: "Save permissions" }).click(),
+  ]);
   await expect(restoredSwitch).toHaveAttribute(
     "aria-checked",
     original ?? "true",

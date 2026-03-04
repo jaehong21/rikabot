@@ -8,11 +8,8 @@ export default defineConfig({
   },
   source: {
     define: {
-      "process.env.RIKA_DEV_BACKEND_WS_HOSTPORT": JSON.stringify(
-        process.env.RIKA_DEV_BACKEND_WS_HOSTPORT ?? "",
-      ),
-      "process.env.RIKA_DEV_BACKEND_WS_URL": JSON.stringify(
-        process.env.RIKA_DEV_BACKEND_WS_URL ?? "",
+      "process.env.RIKA_DEV_BACKEND_HOSTPORT": JSON.stringify(
+        process.env.RIKA_DEV_BACKEND_HOSTPORT ?? "",
       ),
     },
     entry: {

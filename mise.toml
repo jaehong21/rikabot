@@ -26,7 +26,7 @@ run = "cargo build"
 env = { RIKA_DEV_MODE = "1", RIKA_DEV_CORS_ORIGINS = "http://localhost:3000,http://127.0.0.1:3000" }
 run = "watchexec --restart --exts rs,toml -- cargo run -- start --foreground"
 [tasks."dev:fe"]
-env = { RIKA_DEV_MODE = "1", RIKA_DEV_BACKEND_WS_HOSTPORT = "127.0.0.1:4728" }
+env = { RIKA_DEV_MODE = "1", RIKA_DEV_BACKEND_HOSTPORT = "127.0.0.1:4728" }
 dir = "{{cwd}}/web"
 run = "bun run dev"
 

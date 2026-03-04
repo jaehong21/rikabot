@@ -8,8 +8,11 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import axios from "axios";
 
 import type {
+  CreateThreadResponse,
+  DeleteThreadResponse,
   DoneEvent,
   Entry,
   HistoryMessage,
@@ -17,19 +20,28 @@ import type {
   McpStatusSnapshot,
   MessageEntry,
   PermissionsState,
+  PermissionsResponse,
+  RenameThreadResponse,
   ResponseStats,
+  SkillContentResponse,
   ServerEvent,
   SkillStatus,
+  SkillsResponse,
   SkillsStatusSnapshot,
   StoppedEvent,
+  ThreadMessagesResponse,
   ThreadRecord,
+  ThreadsResponse,
   TokenUsage,
   ToolApprovalDecision,
   ToolApprovalRequiredEvent,
   ToolCallResultEvent,
   ToolEntry,
+  UpdateSkillContentResponse,
   ToolStatus,
 } from "@/types/app";
+import { axiosInstance } from "@/lib/api/axios";
+import { isDevelopmentMode, resolveBackendHostPort } from "@/lib/runtime-env";
 
 const TOOL_PREFS_STORAGE_KEY = "rika.toolOutputsExpanded";
 const TOOL_VISIBILITY_STORAGE_KEY = "rika.showToolCalls";
@@ -242,22 +254,31 @@ function findToolIndex(entries: Entry[], callId: string, name: string): number {
 }
 
 function resolveBackendWsUrl(): string {
-  if (process.env.NODE_ENV === "development") {
-    const hostPort = process.env.RIKA_DEV_BACKEND_WS_HOSTPORT?.trim();
-    if (hostPort) {
-      return `ws://${hostPort}/ws`;
-    }
+  const hostPort = resolveBackendHostPort();
+  if (hostPort) {
+    return `ws://${hostPort}/ws`;
+  }
 
-    const explicitUrl = process.env.RIKA_DEV_BACKEND_WS_URL?.trim();
-    if (explicitUrl) {
-      return explicitUrl;
-    }
-
+  if (isDevelopmentMode()) {
     // Backend default host is 127.0.0.1; this avoids localhost/IPv6 (::1) mismatches in browsers.
     return "ws://127.0.0.1:4728/ws";
   }
+
   const proto = window.location.protocol === "https:" ? "wss" : "ws";
   return `${proto}://${window.location.host}/ws`;
+}
+
+function getApiErrorMessage(error: unknown): string {
+  if (axios.isAxiosError(error)) {
+    const message =
+      (error.response?.data as { error?: { message?: string } } | undefined)
+        ?.error?.message ?? error.message;
+    return message || "Request failed";
+  }
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return "Request failed";
 }
 
 export function AppStoreProvider({ children }: { children: ReactNode }) {
@@ -269,8 +290,6 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
   const disposedRef = useRef(false);
   const idCounterRef = useRef(0);
   const currentAssistantIdRef = useRef<string | null>(null);
-  const autoRefreshSwitchInFlightRef = useRef(false);
-  const suppressAutoRefreshErrorRef = useRef(false);
   const currentThreadSnapshotRef = useRef<{
     sessionId: string | null;
     messageCount: number;
@@ -350,6 +369,18 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       updateCurrentThreadSnapshot(threads, currentId);
     },
     [applyThreadState, updateCurrentThreadSnapshot],
+  );
+
+  const applyThreadListKeepingSelection = useCallback(
+    (threads: ThreadRecord[]): void => {
+      const current = stateRef.current.currentSessionId;
+      const nextCurrent =
+        current && threads.some((thread) => thread.id === current)
+          ? current
+          : (threads[0]?.id ?? null);
+      applyThreadStateAndSnapshot(threads, nextCurrent ?? undefined);
+    },
+    [applyThreadStateAndSnapshot],
   );
 
   const applyPermissionsState = useCallback(
@@ -1013,53 +1044,8 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
           return;
         case "thread_list":
           if (Array.isArray(event.sessions)) {
-            const sid =
-              event.current_session_id ?? stateRef.current.currentSessionId;
-            const current = sid
-              ? event.sessions.find((item) => item.id === sid)
-              : undefined;
-            const nextCount = current?.message_count ?? 0;
-            const snapshot = currentThreadSnapshotRef.current;
-            const shouldAutoRefresh =
-              !!sid &&
-              snapshot.sessionId === sid &&
-              nextCount > snapshot.messageCount &&
-              !stateRef.current.isWaiting &&
-              stateRef.current.connectionState === "connected" &&
-              !autoRefreshSwitchInFlightRef.current;
-
-            if (shouldAutoRefresh) {
-              autoRefreshSwitchInFlightRef.current = true;
-              suppressAutoRefreshErrorRef.current = true;
-              sendControl({
-                type: "thread_switch",
-                session_id: sid,
-              });
-            }
+            applyThreadListKeepingSelection(event.sessions);
           }
-          applyThreadStateAndSnapshot(event.sessions, event.current_session_id);
-          return;
-        case "thread_created":
-        case "thread_switched":
-        case "thread_cleared":
-        case "thread_deleted": {
-          autoRefreshSwitchInFlightRef.current = false;
-          suppressAutoRefreshErrorRef.current = false;
-          const fallbackSessionId =
-            "session_id" in event ? event.session_id : undefined;
-          const nextSessionId = event.current_session_id ?? fallbackSessionId;
-          applyThreadStateAndSnapshot(event.sessions, nextSessionId);
-          hydrateCurrentThread(event.history ?? []);
-          return;
-        }
-        case "thread_renamed":
-          applyThreadStateAndSnapshot(event.sessions, event.current_session_id);
-          return;
-        case "permissions_state":
-          applyPermissionsState(
-            event.permissions,
-            event.validation_errors ?? [],
-          );
           return;
         case "permissions_updated":
           applyPermissionsState(event.permissions, []);
@@ -1068,43 +1054,22 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         case "mcp_status":
           applyMcpStatus(event.mcp);
           return;
-        case "skills_status":
-          applySkillsStatus(event.skills, event.validation_errors ?? []);
-          return;
-        case "skill_content":
-          onSkillContent(event.path ?? "", event.content ?? "");
-          return;
         case "error":
-          if (suppressAutoRefreshErrorRef.current) {
-            const message = event.message ?? "";
-            if (
-              message.includes("Cannot modify threads while a run is active") ||
-              message.includes("A run is already active")
-            ) {
-              suppressAutoRefreshErrorRef.current = false;
-              autoRefreshSwitchInFlightRef.current = false;
-              return;
-            }
-          }
           onError(event.message ?? "Unknown error");
       }
     },
     [
+      applyThreadListKeepingSelection,
       applyMcpStatus,
       applyPermissionsState,
-      applySkillsStatus,
-      applyThreadStateAndSnapshot,
-      hydrateCurrentThread,
       onChunk,
       onDone,
       onError,
-      onSkillContent,
       onStopped,
       onToolApprovalRequired,
       onToolCallResult,
       onToolCallStart,
       onUserMessage,
-      sendControl,
     ],
   );
 
@@ -1149,9 +1114,35 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         reconnectTimerRef.current = null;
       }
 
-      sendControl({ type: "thread_list" });
-      sendControl({ type: "permissions_get" });
-      sendControl({ type: "skills_get" });
+      void (async () => {
+        try {
+          const [threadsRes, permissionsRes, skillsRes] = await Promise.all([
+            axiosInstance.get<ThreadsResponse>("/api/threads"),
+            axiosInstance.get<PermissionsResponse>("/api/settings/permissions"),
+            axiosInstance.get<SkillsResponse>("/api/settings/skills"),
+          ]);
+          const sessions = threadsRes.data.sessions ?? [];
+          const current = stateRef.current.currentSessionId;
+          const nextSessionId =
+            current && sessions.some((thread) => thread.id === current)
+              ? current
+              : (sessions[0]?.id ?? null);
+
+          applyThreadStateAndSnapshot(sessions, nextSessionId ?? undefined);
+          if (nextSessionId) {
+            const historyRes = await axiosInstance.get<ThreadMessagesResponse>(
+              `/api/threads/${encodeURIComponent(nextSessionId)}/messages`,
+            );
+            hydrateCurrentThread(historyRes.data.history ?? []);
+          } else {
+            hydrateCurrentThread([]);
+          }
+          applyPermissionsState(permissionsRes.data.permissions, []);
+          applySkillsStatus(skillsRes.data.skills, []);
+        } catch (error) {
+          onError(getApiErrorMessage(error));
+        }
+      })();
     };
 
     socket.onclose = () => {
@@ -1174,7 +1165,15 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         // Ignore malformed server event.
       }
     };
-  }, [handleEvent, scheduleReconnect, sendControl]);
+  }, [
+    applyPermissionsState,
+    applySkillsStatus,
+    applyThreadStateAndSnapshot,
+    handleEvent,
+    hydrateCurrentThread,
+    onError,
+    scheduleReconnect,
+  ]);
 
   useEffect(() => {
     // React StrictMode runs effect cleanup once in development before the real mount.
@@ -1317,7 +1316,10 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
     }
 
     setState((prev) => ({ ...prev, killRequested: true }));
-    sendControl({ type: "kill_switch" });
+    sendControl({
+      type: "kill_switch",
+      session_id: snapshot.currentSessionId,
+    });
   }, [sendControl]);
 
   const switchThread = useCallback(
@@ -1333,19 +1335,50 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         killRequested: false,
       }));
       resetActiveResponseState();
-      sendControl({ type: "thread_switch", session_id: sessionId });
+      void (async () => {
+        try {
+          const [threadsRes, historyRes] = await Promise.all([
+            axiosInstance.get<ThreadsResponse>("/api/threads"),
+            axiosInstance.get<ThreadMessagesResponse>(
+              `/api/threads/${encodeURIComponent(sessionId)}/messages`,
+            ),
+          ]);
+          applyThreadStateAndSnapshot(threadsRes.data.sessions, sessionId);
+          hydrateCurrentThread(historyRes.data.history ?? []);
+        } catch (error) {
+          onError(getApiErrorMessage(error));
+        }
+      })();
     },
-    [resetActiveResponseState, sendControl],
+    [
+      applyThreadStateAndSnapshot,
+      hydrateCurrentThread,
+      onError,
+      resetActiveResponseState,
+    ],
   );
 
   const createThread = useCallback(
     (displayName?: string): void => {
-      sendControl({
-        type: "thread_create",
-        ...(displayName ? { display_name: displayName } : {}),
-      });
+      void (async () => {
+        try {
+          const response = await axiosInstance.post<CreateThreadResponse>(
+            "/api/threads",
+            {
+              ...(displayName ? { display_name: displayName } : {}),
+            },
+          );
+          applyThreadStateAndSnapshot(
+            response.data.sessions,
+            response.data.session.id,
+          );
+          hydrateCurrentThread([]);
+        } catch (error) {
+          onError(getApiErrorMessage(error));
+        }
+      })();
     },
-    [sendControl],
+    [applyThreadStateAndSnapshot, hydrateCurrentThread, onError],
   );
 
   const renameThread = useCallback(
@@ -1353,17 +1386,26 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       if (!sessionId || !displayName.trim()) {
         return;
       }
-      sendControl({
-        type: "thread_rename",
-        session_id: sessionId,
-        display_name: displayName,
-      });
+      void (async () => {
+        try {
+          const response = await axiosInstance.patch<RenameThreadResponse>(
+            `/api/threads/${encodeURIComponent(sessionId)}`,
+            {
+              display_name: displayName,
+            },
+          );
+          applyThreadListKeepingSelection(response.data.sessions);
+        } catch (error) {
+          onError(getApiErrorMessage(error));
+        }
+      })();
     },
-    [sendControl],
+    [applyThreadListKeepingSelection, onError],
   );
 
   const clearCurrentThread = useCallback((): void => {
-    if (!stateRef.current.currentSessionId) {
+    const sessionId = stateRef.current.currentSessionId;
+    if (!sessionId) {
       return;
     }
     setState((prev) => ({
@@ -1372,8 +1414,26 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       killRequested: false,
     }));
     resetActiveResponseState();
-    sendControl({ type: "thread_clear" });
-  }, [resetActiveResponseState, sendControl]);
+    void (async () => {
+      try {
+        const [threadsRes, clearedRes] = await Promise.all([
+          axiosInstance.get<ThreadsResponse>("/api/threads"),
+          axiosInstance.delete<ThreadMessagesResponse>(
+            `/api/threads/${encodeURIComponent(sessionId)}/messages`,
+          ),
+        ]);
+        applyThreadStateAndSnapshot(threadsRes.data.sessions, sessionId);
+        hydrateCurrentThread(clearedRes.data.history ?? []);
+      } catch (error) {
+        onError(getApiErrorMessage(error));
+      }
+    })();
+  }, [
+    applyThreadStateAndSnapshot,
+    hydrateCurrentThread,
+    onError,
+    resetActiveResponseState,
+  ]);
 
   const deleteThread = useCallback(
     (sessionId: string): void => {
@@ -1386,18 +1446,72 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         killRequested: false,
       }));
       resetActiveResponseState();
-      sendControl({ type: "thread_delete", session_id: sessionId });
+      void (async () => {
+        try {
+          const snapshot = stateRef.current;
+          const response = await axiosInstance.delete<DeleteThreadResponse>(
+            `/api/threads/${encodeURIComponent(sessionId)}`,
+          );
+          const sessions = response.data.sessions ?? [];
+          const wasCurrent = snapshot.currentSessionId === sessionId;
+          let nextSessionId: string | null = snapshot.currentSessionId;
+          if (!nextSessionId || wasCurrent) {
+            nextSessionId = response.data.fallback_session_id ?? null;
+          }
+          if (
+            nextSessionId &&
+            !sessions.some((thread) => thread.id === nextSessionId)
+          ) {
+            nextSessionId = sessions[0]?.id ?? null;
+          }
+
+          applyThreadStateAndSnapshot(sessions, nextSessionId ?? undefined);
+          if (nextSessionId) {
+            const historyRes = await axiosInstance.get<ThreadMessagesResponse>(
+              `/api/threads/${encodeURIComponent(nextSessionId)}/messages`,
+            );
+            hydrateCurrentThread(historyRes.data.history ?? []);
+            return;
+          }
+          hydrateCurrentThread([]);
+        } catch (error) {
+          onError(getApiErrorMessage(error));
+        }
+      })();
     },
-    [resetActiveResponseState, sendControl],
+    [
+      applyThreadStateAndSnapshot,
+      hydrateCurrentThread,
+      onError,
+      resetActiveResponseState,
+    ],
   );
 
   const refreshPermissions = useCallback((): void => {
-    sendControl({ type: "permissions_get" });
-  }, [sendControl]);
+    void (async () => {
+      try {
+        const response = await axiosInstance.get<PermissionsResponse>(
+          "/api/settings/permissions",
+        );
+        applyPermissionsState(response.data.permissions, []);
+      } catch (error) {
+        onError(getApiErrorMessage(error));
+      }
+    })();
+  }, [applyPermissionsState, onError]);
 
   const refreshSkills = useCallback((): void => {
-    sendControl({ type: "skills_get" });
-  }, [sendControl]);
+    void (async () => {
+      try {
+        const response = await axiosInstance.get<SkillsResponse>(
+          "/api/settings/skills",
+        );
+        applySkillsStatus(response.data.skills, []);
+      } catch (error) {
+        onError(getApiErrorMessage(error));
+      }
+    })();
+  }, [applySkillsStatus, onError]);
 
   const loadSkillContent = useCallback(
     (path: string): void => {
@@ -1405,26 +1519,33 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       if (!trimmed) {
         return;
       }
-      if (stateRef.current.connectionState !== "connected") {
-        return;
-      }
 
       setState((prev) => ({
         ...prev,
         skillContentLoadingPath: trimmed,
       }));
-      sendControl({ type: "skills_read", path: trimmed });
+      void (async () => {
+        try {
+          const response = await axiosInstance.get<SkillContentResponse>(
+            "/api/settings/skills/content",
+            {
+              params: { path: trimmed },
+            },
+          );
+          onSkillContent(response.data.path, response.data.content);
+        } catch (error) {
+          setState((prev) => ({ ...prev, skillContentLoadingPath: null }));
+          onError(getApiErrorMessage(error));
+        }
+      })();
     },
-    [sendControl],
+    [onError, onSkillContent],
   );
 
   const saveSkill = useCallback(
     (path: string, content: string): void => {
       const trimmedPath = path.trim();
       if (!trimmedPath) {
-        return;
-      }
-      if (stateRef.current.connectionState !== "connected") {
         return;
       }
       if (stateRef.current.skillsSaving) {
@@ -1436,21 +1557,44 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         skillsSaving: true,
         skillsErrors: [],
       }));
-      sendControl({ type: "skills_set", path: trimmedPath, content });
+      void (async () => {
+        try {
+          const response = await axiosInstance.put<UpdateSkillContentResponse>(
+            "/api/settings/skills/content",
+            {
+              path: trimmedPath,
+              content,
+            },
+          );
+          applySkillsStatus(response.data.skills, []);
+          onSkillContent(response.data.path, response.data.content);
+        } catch (error) {
+          setState((prev) => ({
+            ...prev,
+            skillsSaving: false,
+            skillsErrors: [getApiErrorMessage(error)],
+          }));
+        }
+      })();
     },
-    [sendControl],
+    [applySkillsStatus, onSkillContent],
   );
 
   const refreshThreads = useCallback((): void => {
-    sendControl({ type: "thread_list" });
-  }, [sendControl]);
+    void (async () => {
+      try {
+        const response =
+          await axiosInstance.get<ThreadsResponse>("/api/threads");
+        applyThreadListKeepingSelection(response.data.sessions ?? []);
+      } catch (error) {
+        onError(getApiErrorMessage(error));
+      }
+    })();
+  }, [applyThreadListKeepingSelection, onError]);
 
   const savePermissions = useCallback((): void => {
     const snapshot = stateRef.current;
-    if (
-      snapshot.connectionState !== "connected" ||
-      snapshot.permissionsSaving
-    ) {
+    if (snapshot.permissionsSaving) {
       return;
     }
 
@@ -1460,13 +1604,27 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       permissionsErrors: [],
     }));
 
-    sendControl({
-      type: "permissions_set",
-      enabled: snapshot.permissionsEnabled,
-      allow: parseRulesInput(snapshot.permissionsAllowText),
-      deny: parseRulesInput(snapshot.permissionsDenyText),
-    });
-  }, [sendControl]);
+    void (async () => {
+      try {
+        const response = await axiosInstance.put<PermissionsResponse>(
+          "/api/settings/permissions",
+          {
+            enabled: snapshot.permissionsEnabled,
+            allow: parseRulesInput(snapshot.permissionsAllowText),
+            deny: parseRulesInput(snapshot.permissionsDenyText),
+          },
+        );
+        applyPermissionsState(response.data.permissions, []);
+        setState((prev) => ({ ...prev, permissionsSavedAt: Date.now() }));
+      } catch (error) {
+        setState((prev) => ({
+          ...prev,
+          permissionsSaving: false,
+          permissionsErrors: [getApiErrorMessage(error)],
+        }));
+      }
+    })();
+  }, [applyPermissionsState]);
 
   const updatePermissionsField = useCallback(
     (field: "allow" | "deny", value: string): void => {
@@ -1593,9 +1751,11 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
     (rawText: string): void => {
       const text = rawText.trim();
       const ws = wsRef.current;
+      const sessionId = stateRef.current.currentSessionId;
       if (
         !text ||
         stateRef.current.isWaiting ||
+        !sessionId ||
         !ws ||
         ws.readyState !== WebSocket.OPEN
       ) {
@@ -1611,6 +1771,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         JSON.stringify({
           type: "message",
           content: text,
+          session_id: sessionId,
         }),
       );
     },
