@@ -51,6 +51,7 @@ type AppState = {
   entries: Entry[];
   threads: ThreadRecord[];
   currentSessionId: string | null;
+  runningSessionIds: string[];
   connectionState: "connecting" | "connected" | "disconnected";
   isWaiting: boolean;
   waitingStartedAtMs: number | null;
@@ -107,6 +108,7 @@ const DEFAULT_STATE: AppState = {
   entries: [],
   threads: [],
   currentSessionId: null,
+  runningSessionIds: [],
   connectionState: "connecting",
   isWaiting: false,
   waitingStartedAtMs: null,
@@ -348,6 +350,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         ...prev,
         threads: Array.isArray(nextThreads) ? [...nextThreads] : prev.threads,
         currentSessionId: currentId ?? prev.currentSessionId,
+        runningSessionIds: Array.from(runningSessionsRef.current),
         isWaiting: ((): boolean => {
           const sid = currentId ?? prev.currentSessionId;
           return Boolean(sid && runningSessionsRef.current.has(sid));
@@ -645,6 +648,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       setState((prev) => ({
         ...prev,
         entries: hydrateEntriesFromHistory(history, toolOutputsExpanded),
+        runningSessionIds: Array.from(runningSessionsRef.current),
         isWaiting: Boolean(
           sessionId && runningSessionsRef.current.has(sessionId),
         ),
@@ -731,6 +735,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
 
       setState((prev) => ({
         ...prev,
+        runningSessionIds: Array.from(runningSessionsRef.current),
         entries: shouldRender
           ? [
               ...prev.entries,
@@ -778,6 +783,10 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       killRequestedSessionsRef.current.delete(sessionId);
 
       if (sessionId !== stateRef.current.currentSessionId) {
+        setState((prev) => ({
+          ...prev,
+          runningSessionIds: Array.from(runningSessionsRef.current),
+        }));
         return;
       }
 
@@ -792,6 +801,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         if (isDuplicateWhileWaiting) {
           return {
             ...prev,
+            runningSessionIds: Array.from(runningSessionsRef.current),
             isWaiting: true,
             waitingStartedAtMs: startMs,
             killRequested: false,
@@ -800,6 +810,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
 
         return {
           ...prev,
+          runningSessionIds: Array.from(runningSessionsRef.current),
           entries: [
             ...prev.entries,
             {
@@ -1064,6 +1075,10 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       delete runningSessionStartedAtRef.current[sessionId];
       killRequestedSessionsRef.current.delete(sessionId);
       if (sessionId !== stateRef.current.currentSessionId) {
+        setState((prev) => ({
+          ...prev,
+          runningSessionIds: Array.from(runningSessionsRef.current),
+        }));
         return;
       }
 
@@ -1074,6 +1089,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         if (currentAssistantIdRef.current) {
           return {
             ...prev,
+            runningSessionIds: Array.from(runningSessionsRef.current),
             entries: prev.entries.map((entry) => {
               if (
                 entry.kind !== "message" ||
@@ -1096,6 +1112,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         if (fullResponse) {
           return {
             ...prev,
+            runningSessionIds: Array.from(runningSessionsRef.current),
             entries: [
               ...prev.entries,
               {
@@ -1114,6 +1131,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
 
         return {
           ...prev,
+          runningSessionIds: Array.from(runningSessionsRef.current),
           isWaiting: false,
           waitingStartedAtMs: null,
           killRequested: false,
@@ -1132,11 +1150,16 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       delete runningSessionStartedAtRef.current[sessionId];
       killRequestedSessionsRef.current.delete(sessionId);
       if (sessionId !== stateRef.current.currentSessionId) {
+        setState((prev) => ({
+          ...prev,
+          runningSessionIds: Array.from(runningSessionsRef.current),
+        }));
         return;
       }
 
       setState((prev) => ({
         ...prev,
+        runningSessionIds: Array.from(runningSessionsRef.current),
         entries: prev.entries.map((entry) => {
           if (entry.kind !== "tool" || entry.resolved) {
             return entry;
@@ -1312,6 +1335,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         ...prev,
         connectionState: "connected",
         showReconnectOverlay: false,
+        runningSessionIds: [],
         isWaiting: false,
         waitingStartedAtMs: null,
         killRequested: false,

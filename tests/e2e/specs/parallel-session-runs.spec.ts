@@ -82,6 +82,56 @@ test("runs sessions in parallel and keeps navigation plus slash commands active"
   await expect(page.getByText(`mock-e2e: ${slowPrompt}`)).toBeVisible();
 });
 
+test("shows loading indicators in left rail for all running sessions", async ({
+  page,
+}) => {
+  const suffix = String(Date.now()).slice(-6);
+  const firstThread = `pla-${suffix}`;
+  const secondThread = `plb-${suffix}`;
+  const firstSlowPrompt = `e2e-slow:lr-a-${suffix}`;
+  const secondSlowPrompt = `e2e-slow:lr-b-${suffix}`;
+
+  await page.goto("/");
+
+  await Promise.all([
+    waitForApiResponse(page, "POST", "/api/threads"),
+    runSlash(page, `/new ${firstThread}`),
+  ]);
+  await Promise.all([
+    waitForApiResponse(page, "POST", "/api/threads"),
+    runSlash(page, `/new ${secondThread}`),
+  ]);
+
+  await page.getByRole("button", { name: firstThread }).click();
+  await sendFromComposer(page, firstSlowPrompt);
+  await expect(
+    page.getByRole("button", { name: "Stop response" }),
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: secondThread }).click();
+  await sendFromComposer(page, secondSlowPrompt);
+  await expect(
+    page.getByRole("button", { name: "Stop response" }),
+  ).toBeVisible();
+
+  const firstThreadButton = page.getByRole("button", { name: firstThread });
+  const secondThreadButton = page.getByRole("button", { name: secondThread });
+
+  await expect(
+    firstThreadButton.locator("span.h-1.w-1.animate-pulse"),
+  ).toHaveCount(3);
+  await expect(
+    secondThreadButton.locator("span.h-1.w-1.animate-pulse"),
+  ).toHaveCount(3);
+
+  await page.getByRole("button", { name: "Stop response" }).click();
+  await page.getByRole("button", { name: firstThread }).click();
+  const stopFirst = page.getByRole("button", { name: "Stop response" });
+  if (await stopFirst.isVisible()) {
+    await stopFirst.click();
+  }
+});
+
 test("allows command palette and thread explorer navigation while another session runs", async ({
   page,
 }) => {

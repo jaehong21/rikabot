@@ -43,6 +43,10 @@ export function LeftRail({ onNavigate, onOpenCommandPalette }: LeftRailProps) {
       return leftOrder - rightOrder;
     });
   }, [state.threads]);
+  const runningSessionIds = useMemo(
+    () => new Set(state.runningSessionIds),
+    [state.runningSessionIds],
+  );
 
   return (
     <div className="flex h-full flex-col bg-background px-3 py-3 text-foreground">
@@ -88,6 +92,7 @@ export function LeftRail({ onNavigate, onOpenCommandPalette }: LeftRailProps) {
             )}
             {sessions.map((thread) => {
               const active = thread.id === state.currentSessionId;
+              const running = runningSessionIds.has(thread.id);
               return (
                 <button
                   type="button"
@@ -108,6 +113,16 @@ export function LeftRail({ onNavigate, onOpenCommandPalette }: LeftRailProps) {
                   <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap">
                     {trimSessionTitle(thread.display_name)}
                   </span>
+                  {running && (
+                    <span
+                      aria-hidden="true"
+                      className="ml-auto mr-1 inline-flex shrink-0 items-center gap-0.5"
+                    >
+                      <span className="inline-block h-1 w-1 animate-pulse rounded-full bg-foreground/70" />
+                      <span className="inline-block h-1 w-1 animate-pulse rounded-full bg-foreground/70 [animation-delay:120ms]" />
+                      <span className="inline-block h-1 w-1 animate-pulse rounded-full bg-foreground/70 [animation-delay:240ms]" />
+                    </span>
+                  )}
                 </button>
               );
             })}
