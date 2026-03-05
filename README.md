@@ -4,7 +4,7 @@
 
 Rika is a lightweight, local-first AI assistant platform.
 
-Its architecture is inspired by [nanobot](https://github.com/open-source/nanobot), and its Rust implementation style is inspired by [zeroclaw](https://github.com/open-source/zeroclaw).
+Its architecture is inspired by [nanobot](https://github.com/HKUDS/nanobot), and its Rust implementation style is inspired by [zeroclaw](https://github.com/zeroclaw-labs/zeroclaw).
 
 ## Single-Owner Notes
 
