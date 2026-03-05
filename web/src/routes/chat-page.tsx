@@ -213,11 +213,13 @@ export function ChatPage() {
     sessionId: string | null;
     messageCount: number;
     toolCount: number;
+    queuedCount: number;
   }>({
     initialized: false,
     sessionId: null,
     messageCount: 0,
     toolCount: 0,
+    queuedCount: 0,
   });
 
   const canSend =
@@ -313,12 +315,15 @@ export function ChatPage() {
       (count, entry) => count + (entry.kind === "tool" ? 1 : 0),
       0,
     );
+    const queuedCount = state.queuedInputs.length;
     const previous = scrollStateRef.current;
     const sessionChanged = previous.sessionId !== state.currentSessionId;
     const shouldSmoothScroll =
       previous.initialized &&
       !sessionChanged &&
-      (messageCount > previous.messageCount || toolCount > previous.toolCount);
+      (messageCount > previous.messageCount ||
+        toolCount > previous.toolCount ||
+        queuedCount > previous.queuedCount);
     const shouldJumpToBottom = !previous.initialized || sessionChanged;
 
     const viewport = container.closest("[data-radix-scroll-area-viewport]");
@@ -342,12 +347,13 @@ export function ChatPage() {
       sessionId: state.currentSessionId,
       messageCount,
       toolCount,
+      queuedCount,
     };
 
     return () => {
       cancelAnimationFrame(frame);
     };
-  }, [state.entries, state.currentSessionId]);
+  }, [state.entries, state.currentSessionId, state.queuedInputs.length]);
 
   useEffect(() => {
     const handleSlashFocus = (event: KeyboardEvent): void => {
@@ -707,12 +713,55 @@ export function ChatPage() {
               );
             })}
             {state.isWaiting && (
-              <div className="inline-flex items-center gap-1 py-1">
+              <div
+                role="status"
+                aria-label="Loading response"
+                className="inline-flex items-center gap-1 py-1"
+              >
                 <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-foreground/70" />
                 <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-foreground/70 [animation-delay:120ms]" />
                 <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-foreground/70 [animation-delay:240ms]" />
               </div>
             )}
+            {state.queuedInputs.map((queued) => (
+              <div key={queued.id} className="flex flex-col items-end gap-1">
+                <article className="message-prose max-w-[85%] text-[15px] leading-6 text-foreground/60">
+                  <div
+                    dangerouslySetInnerHTML={{
+                      __html: renderMarkdown(queued.content),
+                    }}
+                  />
+                </article>
+                <div className="flex items-center gap-1">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-6 w-6 text-muted-foreground/60 transition-colors hover:text-foreground/90"
+                    onClick={() => {
+                      handleCopy(queued.id, queued.content);
+                    }}
+                    aria-label="Copy queued message"
+                  >
+                    {copiedMessageId === queued.id ? (
+                      <Check className="h-3.5 w-3.5" />
+                    ) : (
+                      <Copy className="h-3.5 w-3.5" />
+                    )}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-6 w-6 text-muted-foreground/60 transition-colors hover:text-foreground/90"
+                    onClick={() => cancelQueuedInput(queued.id)}
+                    aria-label="Remove queued message"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       </ScrollArea>
@@ -732,46 +781,6 @@ export function ChatPage() {
             </h1>
           )}
           <div className="rounded-[1.5rem] border border-border/70 bg-input/70 px-4 py-3 transition-all duration-150 hover:border-border hover:bg-input hover:shadow-[0_8px_18px_rgba(20,20,20,0.06)] focus-within:border-border focus-within:bg-input focus-within:shadow-[0_8px_18px_rgba(20,20,20,0.08)]">
-            {state.queuedInputs.length > 0 && (
-              <section className="mb-3 rounded-xl border border-border/70 bg-background/70 p-3">
-                <div className="flex items-center justify-between gap-2">
-                  <p className="text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground">
-                    Queued messages ({state.queuedInputs.length}/5)
-                  </p>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 px-2 text-xs"
-                    onClick={() => cancelQueuedInput()}
-                  >
-                    Clear all
-                  </Button>
-                </div>
-                <div className="mt-2 space-y-1">
-                  {state.queuedInputs.map((queued) => (
-                    <div
-                      key={queued.id}
-                      className="flex items-center gap-2 rounded-lg border border-border/60 bg-input px-2 py-1.5"
-                    >
-                      <p className="line-clamp-1 min-w-0 flex-1 text-xs text-foreground/90">
-                        {queued.content}
-                      </p>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        className="h-6 w-6"
-                        onClick={() => cancelQueuedInput(queued.id)}
-                        aria-label="Cancel queued message"
-                      >
-                        <X className="h-3.5 w-3.5" />
-                      </Button>
-                    </div>
-                  ))}
-                </div>
-              </section>
-            )}
             <Popover open={showSlashSuggestions} onOpenChange={() => {}}>
               <PopoverAnchor asChild>
                 <div>

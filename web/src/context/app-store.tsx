@@ -745,7 +745,8 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
 
   const onUserMessage = useCallback(
     (sessionId: string, text: string): void => {
-      if (!text.trim()) {
+      const normalizedText = text.trim();
+      if (!normalizedText) {
         return;
       }
 
@@ -756,20 +757,37 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      setState((prev) => ({
-        ...prev,
-        entries: [
-          ...prev.entries,
-          {
-            id: nextId(),
-            kind: "message",
-            role: "user",
-            text,
-          } as MessageEntry,
-        ],
-        isWaiting: true,
-        killRequested: false,
-      }));
+      setState((prev) => {
+        const lastEntry = prev.entries[prev.entries.length - 1];
+        const isDuplicateWhileWaiting =
+          prev.isWaiting &&
+          lastEntry?.kind === "message" &&
+          lastEntry.role === "user" &&
+          lastEntry.text.trim() === normalizedText;
+
+        if (isDuplicateWhileWaiting) {
+          return {
+            ...prev,
+            isWaiting: true,
+            killRequested: false,
+          };
+        }
+
+        return {
+          ...prev,
+          entries: [
+            ...prev.entries,
+            {
+              id: nextId(),
+              kind: "message",
+              role: "user",
+              text: normalizedText,
+            } as MessageEntry,
+          ],
+          isWaiting: true,
+          killRequested: false,
+        };
+      });
 
       activeResponseStartedAtRef.current = Date.now();
       activeToolCallCountRef.current = 0;

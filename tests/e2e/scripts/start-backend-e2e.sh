@@ -8,4 +8,4 @@ if [[ ! -f "${CONFIG_PATH}" ]]; then
   bash "${ROOT_DIR}/tests/e2e/scripts/prepare-e2e-env.sh"
 fi
 
-exec cargo run -- --config "${CONFIG_PATH}" start --foreground
+exec cargo run --quiet -- --config "${CONFIG_PATH}" start --foreground

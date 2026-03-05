@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
 import {
   openCommandPalette,
@@ -6,6 +6,36 @@ import {
   sendFromComposer,
   waitForApiResponse,
 } from "./helpers";
+
+async function expectQueuedAfterLoadingIndicator(
+  page: Page,
+  queuedText: string,
+): Promise<void> {
+  const loadingIndicator = page.getByLabel("Loading response");
+  const queuedMessage = page.getByText(queuedText, { exact: true }).first();
+
+  await expect(loadingIndicator).toBeVisible();
+  await expect(queuedMessage).toBeVisible();
+
+  const loadingHandle = await loadingIndicator.elementHandle();
+  const queuedHandle = await queuedMessage.elementHandle();
+  expect(loadingHandle).toBeTruthy();
+  expect(queuedHandle).toBeTruthy();
+
+  if (!loadingHandle || !queuedHandle) {
+    return;
+  }
+
+  const isQueuedAfterLoading = await page.evaluate(
+    ([loadingElement, queuedElement]) =>
+      (loadingElement.compareDocumentPosition(queuedElement) &
+        Node.DOCUMENT_POSITION_FOLLOWING) !==
+      0,
+    [loadingHandle, queuedHandle],
+  );
+
+  expect(isQueuedAfterLoading).toBe(true);
+}
 
 test("runs sessions in parallel and keeps navigation plus slash commands active", async ({
   page,
@@ -118,12 +148,16 @@ test("queues same-session input and auto-runs queued prompt after done", async (
   await sendFromComposer(page, firstPrompt);
   await sendFromComposer(page, secondPrompt);
 
-  await expect(page.getByText("Queued messages (1/5)")).toBeVisible();
-  await expect(page.getByText(secondPrompt, { exact: true })).toBeVisible();
+  await expectQueuedAfterLoadingIndicator(page, secondPrompt);
+  await expect(
+    page.getByRole("button", { name: "Remove queued message" }).first(),
+  ).toBeVisible();
 
   await expect(page.getByText(`mock-e2e: ${firstPrompt}`)).toBeVisible();
   await expect(page.getByText(`mock-e2e: ${secondPrompt}`)).toBeVisible();
-  await expect(page.getByText("Queued messages (1/5)")).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Remove queued message" }),
+  ).toHaveCount(0);
 });
 
 test("keeps queued input after runtime error until user cancels it", async ({
@@ -138,16 +172,25 @@ test("keeps queued input after runtime error until user cancels it", async ({
   await sendFromComposer(page, failingPrompt);
   await sendFromComposer(page, queuedPrompt);
 
-  await expect(page.getByText("Queued messages (1/5)")).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Remove queued message" }).first(),
+  ).toBeVisible();
   await expect(page.getByText(queuedPrompt, { exact: true })).toBeVisible();
   await expect(page.getByText("Error: OpenAI API error")).toBeVisible();
 
   await page.waitForTimeout(400);
-  await expect(page.getByText("Queued messages (1/5)")).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Remove queued message" }).first(),
+  ).toBeVisible();
   await expect(page.getByText(`mock-e2e: ${queuedPrompt}`)).toHaveCount(0);
 
-  await page.getByRole("button", { name: "Clear all" }).click();
-  await expect(page.getByText("Queued messages (1/5)")).toHaveCount(0);
+  await page
+    .getByRole("button", { name: "Remove queued message" })
+    .first()
+    .click();
+  await expect(
+    page.getByRole("button", { name: "Remove queued message" }),
+  ).toHaveCount(0);
 });
 
 test("clears queued prompts when stop is issued", async ({ page }) => {
@@ -159,10 +202,14 @@ test("clears queued prompts when stop is issued", async ({ page }) => {
 
   await sendFromComposer(page, runningPrompt);
   await sendFromComposer(page, queuedPrompt);
-  await expect(page.getByText("Queued messages (1/5)")).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Remove queued message" }).first(),
+  ).toBeVisible();
 
   await page.getByRole("button", { name: "Stop response" }).click();
-  await expect(page.getByText("Queued messages (1/5)")).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Remove queued message" }),
+  ).toHaveCount(0);
   await expect(page.getByText(`mock-e2e: ${queuedPrompt}`)).toHaveCount(0);
 });
 
@@ -192,17 +239,23 @@ test("reconnects after refresh mid-run and resyncs queued inputs", async ({
 
   await sendFromComposer(page, runningPrompt);
   await sendFromComposer(page, queuedPrompt);
-  await expect(page.getByText(/Queued messages \(\d\/5\)/)).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Remove queued message" }).first(),
+  ).toBeVisible();
   await expect(page.getByText(queuedPrompt, { exact: true })).toBeVisible();
 
   await page.reload();
 
   await expect(page.getByText(runningPrompt, { exact: true })).toBeVisible();
-  await expect(page.getByText(/Queued messages \(\d\/5\)/)).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Remove queued message" }).first(),
+  ).toBeVisible();
   const stopButton = page.getByRole("button", { name: "Stop response" });
   await expect(stopButton).toBeVisible();
   await stopButton.click();
-  await expect(page.getByText(/Queued messages \(\d\/5\)/)).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Remove queued message" }),
+  ).toHaveCount(0);
 });
 
 test("keeps chat session query-state across navigation, back/forward, and reload", async ({
