@@ -1,0 +1,21 @@
+// Project tasks configuration. See https://zed.dev/docs/tasks for documentation.
+[
+  {
+    "label": "Dev",
+    "command": "mise run 'dev:*'",
+  },
+  {
+    "label": "Build",
+    "command": "mise run 'build:*'",
+    "hide": "on_success",
+    "use_new_terminal": true,
+    "reveal_target": "center",
+  },
+  {
+    "label": "Test",
+    "command": "mise run 'test:*'",
+    "hide": "never",
+    "use_new_terminal": true,
+    "reveal_target": "center",
+  },
+]
