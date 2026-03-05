@@ -13,6 +13,8 @@ pub struct AppConfig {
     pub model: String,
     #[serde(default = "default_temperature")]
     pub temperature: f64,
+    #[serde(default = "default_max_concurrent_sessions")]
+    pub max_concurrent_sessions: usize,
     pub provider: String,
     pub providers: ProvidersConfig,
     /// Optional path to workspace directory. Defaults to ~/.rika/workspace
@@ -397,6 +399,9 @@ fn default_model() -> String {
 fn default_temperature() -> f64 {
     0.1
 }
+fn default_max_concurrent_sessions() -> usize {
+    8
+}
 fn default_skills_enabled() -> bool {
     true
 }
@@ -750,6 +755,9 @@ impl AppConfig {
     }
 
     pub fn validate(&self) -> Result<()> {
+        if self.max_concurrent_sessions == 0 {
+            anyhow::bail!("max_concurrent_sessions must be greater than 0");
+        }
         if self.shell.timeout_secs == 0 {
             anyhow::bail!("shell timeout_secs must be greater than 0");
         }
@@ -795,6 +803,10 @@ impl AppConfig {
         }
 
         Ok(())
+    }
+
+    pub fn resolved_max_concurrent_sessions(&self) -> usize {
+        self.max_concurrent_sessions
     }
 }
 
@@ -1395,6 +1407,8 @@ api_key = "x"
         )
         .expect("parse config");
 
+        assert_eq!(cfg.max_concurrent_sessions, 8);
+
         assert!(cfg.shell.enabled);
         assert_eq!(cfg.shell.timeout_secs, 30);
         assert_eq!(cfg.shell.max_output_bytes, 10_000);
@@ -1406,6 +1420,22 @@ api_key = "x"
         assert_eq!(cfg.process.kill_grace_secs, 5);
         assert_eq!(cfg.process.wait_default_secs, 20);
         assert_eq!(cfg.process.wait_max_secs, 25);
+    }
+
+    #[test]
+    fn validate_rejects_zero_max_concurrent_sessions() {
+        let cfg: AppConfig = toml::from_str(
+            r#"
+provider = "openai"
+max_concurrent_sessions = 0
+[providers.openai]
+api_key = "x"
+"#,
+        )
+        .expect("parse config");
+
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("max_concurrent_sessions"));
     }
 
     #[test]

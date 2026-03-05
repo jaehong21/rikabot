@@ -13,14 +13,17 @@ use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::sync::{broadcast, mpsc, oneshot};
+use uuid::Uuid;
 
 use crate::agent::{AgentEvent, ToolApprovalDecision, ToolApprovalDecisionKind};
 use crate::config::PermissionsConfig;
-use crate::gateway::{ActiveRunState, AppState};
+use crate::gateway::{ActiveRunState, AppState, QueuedInput, RunManager};
 use crate::mcp_runtime::McpStatusSnapshot;
 use crate::permissions::PermissionEngine;
 use crate::prompt::SessionPromptContext;
 use crate::providers::ChatMessage;
+
+const MAX_QUEUED_MESSAGES_PER_SESSION: usize = 5;
 
 /// Inbound message from the client.
 #[derive(Debug, Clone, Deserialize)]
@@ -37,17 +40,22 @@ struct ClientMessage {
     decision: Option<ToolApprovalDecisionKind>,
     #[serde(default)]
     allow_rule: Option<String>,
+    #[serde(default)]
+    queue_item_id: Option<String>,
 }
 
 struct RunOutcome {
     result: anyhow::Result<()>,
-    updated_history: Vec<ChatMessage>,
-    previous_len: usize,
 }
 
 struct SessionRunInput {
     history: Vec<ChatMessage>,
     session_display_name: String,
+}
+
+enum SubmitOutcome {
+    Reserved,
+    Queued,
 }
 
 pub async fn spawn_session_change_watcher(state: AppState) {
@@ -95,21 +103,10 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         }
     };
 
-    if let Some(active_sid) = active_run_session_id(&state).await {
-        current_session_id = active_sid;
-    }
-
-    if let Err(err) = attach_to_active_run(
-        &state,
-        &current_session_id,
-        run_signal_tx.clone(),
-        &mut ws_sink,
-    )
-    .await
-    {
+    if let Err(err) = attach_to_runtime(&state, run_signal_tx.clone(), &mut ws_sink).await {
         let _ = send_error(
             &mut ws_sink,
-            &format!("Failed to reattach active run: {}", err),
+            &format!("Failed to attach runtime state: {}", err),
         )
         .await;
         return;
@@ -143,11 +140,6 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
 
                 match client_msg.msg_type.as_str() {
                     "message" => {
-                        if has_active_run(&state).await {
-                            let _ = send_error(&mut ws_sink, "A run is already active. Stop it before sending another message.").await;
-                            continue;
-                        }
-
                         let content = match client_msg.content {
                             Some(c) if !c.trim().is_empty() => c,
                             _ => continue,
@@ -162,36 +154,18 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                             .to_string();
                         current_session_id = target_session_id.clone();
 
-                        let run_input = match load_session_run_input(&state, &target_session_id).await {
-                            Ok(input) => input,
-                            Err(err) => {
-                                let _ = send_error(
-                                    &mut ws_sink,
-                                    &format!("Failed to load session history: {}", err),
-                                )
-                                .await;
-                                continue;
-                            }
-                        };
-
-                        match spawn_active_run(
+                        let submit_result = submit_or_queue_message(
                             &state,
-                            run_signal_tx.clone(),
                             &target_session_id,
-                            &run_input.history,
-                            &run_input.session_display_name,
                             content,
                         )
-                        .await
-                        {
-                            Ok(()) => {}
-                            Err(err) => {
-                                let _ = send_error(
-                                    &mut ws_sink,
-                                    &format!("Failed to start agent run: {}", err),
-                                )
-                                .await;
-                            }
+                        .await;
+                        if let Err(err) = submit_result {
+                            let _ = send_error(
+                                &mut ws_sink,
+                                &format!("Failed to submit message: {}", err),
+                            )
+                            .await;
                         }
                     }
                     "kill_switch" => {
@@ -201,9 +175,31 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                             .map(str::trim)
                             .filter(|sid| !sid.is_empty())
                             .unwrap_or(current_session_id.as_str());
-                        if stop_active_run(&state, "user_cancelled", Some(requested_session)).await {
-                        } else {
+                        if !stop_active_run(&state, "user_cancelled", Some(requested_session)).await {
                             let _ = send_stopped(&mut ws_sink, "no_active_run", Some(requested_session)).await;
+                        }
+                    }
+                    "queue_cancel" => {
+                        let requested_session = client_msg
+                            .session_id
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|sid| !sid.is_empty())
+                            .unwrap_or(current_session_id.as_str());
+
+                        let queue_item_id = client_msg
+                            .queue_item_id
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|id| !id.is_empty());
+
+                        let changed = cancel_queued_inputs(&state, requested_session, queue_item_id).await;
+                        if !changed {
+                            let _ = send_error(
+                                &mut ws_sink,
+                                "No queued message matched the requested cancellation.",
+                            )
+                            .await;
                         }
                     }
                     "tool_approval_decision" => {
@@ -230,7 +226,6 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                 let Some(payload) = signal else {
                     break;
                 };
-
                 if ws_sink
                     .send(Message::text(payload.to_string()))
                     .await
@@ -341,42 +336,111 @@ fn is_session_file_path(path: &Path) -> bool {
         .is_some_and(|name| name == "sessions.json" || name.ends_with(".jsonl"))
 }
 
-async fn spawn_active_run(
+async fn submit_or_queue_message(
     state: &AppState,
-    run_signal_tx: mpsc::UnboundedSender<Value>,
     session_id: &str,
-    history: &[ChatMessage],
-    session_display_name: &str,
+    content: String,
+) -> anyhow::Result<()> {
+    let submit_outcome = reserve_or_queue_submission(state, session_id, content.clone()).await?;
+    if matches!(submit_outcome, SubmitOutcome::Queued) {
+        return Ok(());
+    }
+
+    let run_input = match load_session_run_input(state, session_id).await {
+        Ok(input) => input,
+        Err(err) => {
+            release_starting_slot(state, session_id).await;
+            return Err(err);
+        }
+    };
+
+    if let Err(err) = spawn_reserved_run(
+        state.clone(),
+        session_id.to_string(),
+        run_input.history,
+        run_input.session_display_name,
+        content,
+    )
+    .await
+    {
+        release_starting_slot(state, session_id).await;
+        return Err(err);
+    }
+
+    Ok(())
+}
+
+async fn reserve_or_queue_submission(
+    state: &AppState,
+    session_id: &str,
+    content: String,
+) -> anyhow::Result<SubmitOutcome> {
+    let mut runs = state.runs.lock().await;
+    let session_busy =
+        runs.active.contains_key(session_id) || runs.starting_sessions.contains(session_id);
+    let at_capacity =
+        runs.active.len() + runs.starting_sessions.len() >= runs.max_concurrent_sessions;
+
+    if session_busy || at_capacity {
+        let queue = runs.queues.entry(session_id.to_string()).or_default();
+        if queue.len() >= MAX_QUEUED_MESSAGES_PER_SESSION {
+            anyhow::bail!(
+                "Queue is full for session {} (max {} queued user messages).",
+                session_id,
+                MAX_QUEUED_MESSAGES_PER_SESSION
+            );
+        }
+
+        queue.push_back(QueuedInput {
+            id: Uuid::new_v4().to_string(),
+            content,
+        });
+
+        let payload = build_queue_updated_payload(session_id, queue);
+        broadcast_payload_locked(&mut runs, payload);
+        return Ok(SubmitOutcome::Queued);
+    }
+
+    runs.starting_sessions.insert(session_id.to_string());
+    Ok(SubmitOutcome::Reserved)
+}
+
+async fn spawn_reserved_run(
+    state: AppState,
+    session_id: String,
+    history: Vec<ChatMessage>,
+    session_display_name: String,
     content: String,
 ) -> anyhow::Result<()> {
     let system_prompt =
         state
             .prompt_manager
             .build_prompt_with_session(Some(&SessionPromptContext {
-                session_id: session_id.to_string(),
-                session_display_name: session_display_name.to_string(),
+                session_id: session_id.clone(),
+                session_display_name: session_display_name.clone(),
             }))?;
-    let mut runs_guard = state.runs.lock().await;
-    if runs_guard.active.is_some() {
-        return Err(anyhow::anyhow!(
-            "A run is already active. Stop it before sending another message."
-        ));
-    }
 
-    let run_id = runs_guard.next_run_id;
-    runs_guard.next_run_id = runs_guard.next_run_id.saturating_add(1);
+    append_session_messages(&state, &session_id, &[ChatMessage::user(&content)]).await?;
+
+    let run_id = {
+        let mut runs_guard = state.runs.lock().await;
+        if !runs_guard.starting_sessions.contains(&session_id) {
+            anyhow::bail!("run slot reservation missing for session {}", session_id);
+        }
+        let run_id = runs_guard.next_run_id;
+        runs_guard.next_run_id = runs_guard.next_run_id.saturating_add(1);
+        run_id
+    };
 
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<AgentEvent>();
     let (approval_tx, approval_rx) = mpsc::unbounded_channel::<ToolApprovalDecision>();
     let (outcome_tx, outcome_rx) = oneshot::channel::<RunOutcome>();
     let agent = state.agent.clone();
-    let sessions = state.sessions.clone();
     let run_store = state.runs.clone();
-    let thread_events = state.thread_events.clone();
-    let mut history_clone = history.to_vec();
-    let previous_len = history_clone.len();
-    let content_for_event = content.clone();
-    let session_id_owned = session_id.to_string();
+    let state_for_task = state.clone();
+    let mut history_clone = history;
+    let session_id_owned = session_id.clone();
+    let content_for_user_event = content.clone();
 
     let agent_task = tokio::spawn(async move {
         let result = agent
@@ -388,18 +452,15 @@ async fn spawn_active_run(
                 approval_rx,
             )
             .await;
-        let _ = outcome_tx.send(RunOutcome {
-            result,
-            updated_history: history_clone,
-            previous_len,
-        });
+        let _ = outcome_tx.send(RunOutcome { result });
     });
 
     let session_id_for_task = session_id_owned.clone();
     let event_task = tokio::spawn(async move {
         while let Some(event) = event_rx.recv().await {
             if let AgentEvent::ToolApprovalRequired { request_id, .. } = &event {
-                register_pending_approval(&run_store, run_id, request_id).await;
+                register_pending_approval(&run_store, &session_id_for_task, run_id, request_id)
+                    .await;
             }
             if let AgentEvent::ToolCallResult {
                 approval_request_id: Some(request_id),
@@ -407,102 +468,357 @@ async fn spawn_active_run(
                 ..
             } = &event
             {
-                clear_pending_approval(&run_store, run_id, request_id).await;
+                clear_pending_approval(&run_store, &session_id_for_task, run_id, request_id).await;
+            }
+
+            if let Err(err) =
+                persist_agent_event(&state_for_task, &session_id_for_task, &event).await
+            {
+                let payload = serde_json::json!({
+                    "type": "error",
+                    "message": format!("Failed to persist session message: {}", err),
+                });
+                broadcast_run_payload(&run_store, &session_id_for_task, run_id, payload).await;
             }
 
             let payload = match serde_json::to_value(&event) {
                 Ok(value) => value,
                 Err(_) => continue,
             };
-            broadcast_run_payload(&run_store, run_id, payload).await;
+            broadcast_run_payload(&run_store, &session_id_for_task, run_id, payload).await;
         }
 
-        if let Ok(outcome) = outcome_rx.await {
-            if matches!(outcome.result, Ok(()))
-                && outcome.previous_len <= outcome.updated_history.len()
-            {
-                let appended = &outcome.updated_history[outcome.previous_len..];
-                let append_result = {
-                    let mut sessions = sessions.lock().await;
-                    sessions.append_messages(&session_id_for_task, appended)
-                };
-                if let Err(err) = append_result {
-                    let payload = serde_json::json!({
-                        "type": "error",
-                        "message": format!("Failed to persist session messages: {}", err),
-                    });
-                    broadcast_run_payload(&run_store, run_id, payload).await;
-                } else {
-                    let thread_list_payload = match build_thread_list_payload_from_sessions(
-                        &sessions, false,
-                    )
-                    .await
-                    {
-                        Ok(payload) => payload,
-                        Err(err) => {
-                            let payload = serde_json::json!({
-                                "type": "error",
-                                "message": format!("Failed to build thread list payload: {}", err),
-                            });
-                            broadcast_run_payload(&run_store, run_id, payload).await;
-                            clear_active_run(&run_store, run_id).await;
-                            return;
-                        }
-                    };
-                    broadcast_run_payload(&run_store, run_id, thread_list_payload.clone()).await;
-                    let _ = thread_events.send(thread_list_payload);
-                }
-            }
+        let outcome_ok = matches!(outcome_rx.await, Ok(RunOutcome { result: Ok(()) }));
+        clear_active_run(&run_store, &session_id_for_task, run_id).await;
+        if outcome_ok {
+            let state_for_scheduler = state_for_task.clone();
+            let handle = tokio::runtime::Handle::current();
+            // Queue scheduling uses a non-Send future path; run it from a blocking lane.
+            tokio::task::spawn_blocking(move || {
+                handle.block_on(maybe_start_queued_runs(state_for_scheduler));
+            });
+        }
+        let _ = state_for_task;
+    });
+
+    {
+        let mut runs_guard = state.runs.lock().await;
+        if runs_guard.active.contains_key(&session_id) {
+            runs_guard.starting_sessions.remove(&session_id);
+            agent_task.abort();
+            event_task.abort();
+            anyhow::bail!("active run already exists for session {}", session_id);
         }
 
-        clear_active_run(&run_store, run_id).await;
-    });
+        runs_guard.starting_sessions.remove(&session_id);
 
-    let user_payload = serde_json::json!({
-        "type": "user_message",
-        "content": content_for_event,
-    });
-    let _ = run_signal_tx.send(user_payload.clone());
-    runs_guard.active = Some(ActiveRunState {
-        run_id,
-        session_id: session_id_owned,
-        events: vec![user_payload],
-        subscribers: vec![run_signal_tx],
-        approval_tx,
-        pending_approval_ids: std::collections::HashSet::new(),
-        agent_task,
-        event_task,
-    });
+        let user_payload = with_run_scope(
+            serde_json::json!({
+                "type": "user_message",
+                "content": content_for_user_event,
+            }),
+            &session_id,
+            run_id,
+        );
+
+        let active = ActiveRunState {
+            run_id,
+            events: vec![user_payload.clone()],
+            approval_tx,
+            pending_approval_ids: std::collections::HashSet::new(),
+            agent_task,
+            event_task,
+        };
+        runs_guard.active.insert(session_id.clone(), active);
+        broadcast_payload_locked(&mut runs_guard, user_payload);
+    }
 
     Ok(())
 }
 
+async fn persist_agent_event(
+    state: &AppState,
+    session_id: &str,
+    event: &AgentEvent,
+) -> anyhow::Result<()> {
+    match event {
+        AgentEvent::ToolCallStart {
+            call_id,
+            name,
+            args,
+        } => {
+            let arguments = if let Some(raw) = args.as_str() {
+                raw.to_string()
+            } else {
+                args.to_string()
+            };
+            let assistant_content = serde_json::json!({
+                "tool_calls": [{
+                    "id": call_id,
+                    "name": name,
+                    "arguments": arguments,
+                }],
+                "content": "",
+            })
+            .to_string();
+            append_session_messages(
+                state,
+                session_id,
+                &[ChatMessage::assistant(&assistant_content)],
+            )
+            .await
+        }
+        AgentEvent::ToolCallResult {
+            call_id,
+            output,
+            status,
+            awaiting_approval,
+            ..
+        } => {
+            if *awaiting_approval {
+                return Ok(());
+            }
+
+            let status_value = serde_json::to_value(status)
+                .ok()
+                .and_then(|raw| raw.as_str().map(ToString::to_string))
+                .unwrap_or_else(|| "failed".to_string());
+
+            let tool_msg_content = serde_json::json!({
+                "tool_call_id": call_id,
+                "content": output,
+                "status": status_value,
+            })
+            .to_string();
+            append_session_messages(state, session_id, &[ChatMessage::tool(&tool_msg_content)])
+                .await
+        }
+        AgentEvent::Done { full_response, .. } => {
+            append_session_messages(state, session_id, &[ChatMessage::assistant(full_response)])
+                .await
+        }
+        AgentEvent::Error { message } => {
+            let note = format!("Error: {}", message);
+            append_session_messages(state, session_id, &[ChatMessage::assistant(&note)]).await
+        }
+        AgentEvent::Chunk { .. } | AgentEvent::ToolApprovalRequired { .. } => Ok(()),
+    }
+}
+
+async fn append_session_messages(
+    state: &AppState,
+    session_id: &str,
+    messages: &[ChatMessage],
+) -> anyhow::Result<()> {
+    if messages.is_empty() {
+        return Ok(());
+    }
+
+    let mut sessions = state.sessions.lock().await;
+    sessions.append_messages(session_id, messages)
+}
+
+async fn maybe_start_queued_runs(state: AppState) {
+    loop {
+        let next = {
+            let mut runs = state.runs.lock().await;
+            if runs.active.len() + runs.starting_sessions.len() >= runs.max_concurrent_sessions {
+                None
+            } else {
+                let mut candidate_session_id: Option<String> = None;
+                for (session_id, queue) in &runs.queues {
+                    if queue.is_empty()
+                        || runs.active.contains_key(session_id)
+                        || runs.starting_sessions.contains(session_id)
+                    {
+                        continue;
+                    }
+                    candidate_session_id = Some(session_id.clone());
+                    break;
+                }
+
+                let Some(session_id) = candidate_session_id else {
+                    return;
+                };
+
+                let content = {
+                    let queue = runs
+                        .queues
+                        .get_mut(&session_id)
+                        .expect("queue must exist for selected session");
+                    let queued = queue
+                        .pop_front()
+                        .expect("queue must contain at least one item");
+                    let content = queued.content;
+                    let queue_payload = build_queue_updated_payload(&session_id, queue);
+                    broadcast_payload_locked(&mut runs, queue_payload);
+                    content
+                };
+
+                let remove_queue = runs
+                    .queues
+                    .get(&session_id)
+                    .is_some_and(|queue| queue.is_empty());
+                if remove_queue {
+                    runs.queues.remove(&session_id);
+                }
+
+                runs.starting_sessions.insert(session_id.clone());
+                Some((session_id, content))
+            }
+        };
+
+        let Some((session_id, content)) = next else {
+            return;
+        };
+
+        let run_input = match load_session_run_input(&state, &session_id).await {
+            Ok(input) => input,
+            Err(err) => {
+                release_starting_slot(&state, &session_id).await;
+                broadcast_session_error(
+                    &state,
+                    &session_id,
+                    &format!("Failed to load queued session history: {}", err),
+                )
+                .await;
+                continue;
+            }
+        };
+
+        if let Err(err) = spawn_reserved_run(
+            state.clone(),
+            session_id.clone(),
+            run_input.history,
+            run_input.session_display_name,
+            content,
+        )
+        .await
+        {
+            release_starting_slot(&state, &session_id).await;
+            broadcast_session_error(
+                &state,
+                &session_id,
+                &format!("Failed to start queued run: {}", err),
+            )
+            .await;
+        }
+    }
+}
+
+async fn release_starting_slot(state: &AppState, session_id: &str) {
+    let mut runs = state.runs.lock().await;
+    runs.starting_sessions.remove(session_id);
+}
+
+async fn cancel_queued_inputs(
+    state: &AppState,
+    session_id: &str,
+    queue_item_id: Option<&str>,
+) -> bool {
+    let mut runs = state.runs.lock().await;
+    let Some(queue) = runs.queues.get_mut(session_id) else {
+        return false;
+    };
+
+    let changed = if let Some(item_id) = queue_item_id {
+        let maybe_idx = queue.iter().position(|item| item.id == item_id);
+        if let Some(idx) = maybe_idx {
+            queue.remove(idx);
+            true
+        } else {
+            false
+        }
+    } else if queue.is_empty() {
+        false
+    } else {
+        queue.clear();
+        true
+    };
+
+    if !changed {
+        return false;
+    }
+
+    let payload = build_queue_updated_payload(session_id, queue);
+    let remove_queue = queue.is_empty();
+    if remove_queue {
+        runs.queues.remove(session_id);
+    }
+    broadcast_payload_locked(&mut runs, payload);
+    true
+}
+
+fn build_queue_updated_payload(
+    session_id: &str,
+    queue: &std::collections::VecDeque<QueuedInput>,
+) -> Value {
+    let items: Vec<QueuedInput> = queue.iter().cloned().collect();
+    serde_json::json!({
+        "type": "queue_updated",
+        "session_id": session_id,
+        "items": items,
+    })
+}
+
+fn broadcast_payload_locked(runs: &mut RunManager, payload: Value) {
+    runs.subscribers
+        .retain(|sub| sub.send(payload.clone()).is_ok());
+}
+
+fn with_run_scope(payload: Value, session_id: &str, run_id: u64) -> Value {
+    let mut payload_obj = match payload {
+        Value::Object(map) => map,
+        _ => serde_json::Map::new(),
+    };
+    payload_obj.insert(
+        "session_id".to_string(),
+        Value::String(session_id.to_string()),
+    );
+    payload_obj.insert(
+        "run_id".to_string(),
+        Value::Number(serde_json::Number::from(run_id)),
+    );
+    Value::Object(payload_obj)
+}
+
 async fn broadcast_run_payload(
-    runs: &std::sync::Arc<tokio::sync::Mutex<crate::gateway::RunManager>>,
+    runs: &std::sync::Arc<tokio::sync::Mutex<RunManager>>,
+    session_id: &str,
     run_id: u64,
     payload: Value,
 ) {
     let mut runs = runs.lock().await;
-    let Some(active) = runs.active.as_mut() else {
-        return;
-    };
-    if active.run_id != run_id {
-        return;
+    let scoped_payload = with_run_scope(payload, session_id, run_id);
+
+    if let Some(active) = runs.active.get_mut(session_id) {
+        if active.run_id == run_id {
+            active.events.push(scoped_payload.clone());
+        }
     }
 
-    active.events.push(payload.clone());
-    active
-        .subscribers
-        .retain(|sub| sub.send(payload.clone()).is_ok());
+    broadcast_payload_locked(&mut runs, scoped_payload);
+}
+
+async fn broadcast_session_error(state: &AppState, session_id: &str, message: &str) {
+    let payload = serde_json::json!({
+        "type": "error",
+        "session_id": session_id,
+        "message": message,
+    });
+
+    let mut runs = state.runs.lock().await;
+    broadcast_payload_locked(&mut runs, payload);
 }
 
 async fn register_pending_approval(
-    runs: &std::sync::Arc<tokio::sync::Mutex<crate::gateway::RunManager>>,
+    runs: &std::sync::Arc<tokio::sync::Mutex<RunManager>>,
+    session_id: &str,
     run_id: u64,
     request_id: &str,
 ) {
     let mut runs = runs.lock().await;
-    let Some(active) = runs.active.as_mut() else {
+    let Some(active) = runs.active.get_mut(session_id) else {
         return;
     };
     if active.run_id != run_id {
@@ -512,12 +828,13 @@ async fn register_pending_approval(
 }
 
 async fn clear_pending_approval(
-    runs: &std::sync::Arc<tokio::sync::Mutex<crate::gateway::RunManager>>,
+    runs: &std::sync::Arc<tokio::sync::Mutex<RunManager>>,
+    session_id: &str,
     run_id: u64,
     request_id: &str,
 ) {
     let mut runs = runs.lock().await;
-    let Some(active) = runs.active.as_mut() else {
+    let Some(active) = runs.active.get_mut(session_id) else {
         return;
     };
     if active.run_id != run_id {
@@ -527,13 +844,17 @@ async fn clear_pending_approval(
 }
 
 async fn clear_active_run(
-    runs: &std::sync::Arc<tokio::sync::Mutex<crate::gateway::RunManager>>,
+    runs: &std::sync::Arc<tokio::sync::Mutex<RunManager>>,
+    session_id: &str,
     run_id: u64,
 ) {
     let mut runs = runs.lock().await;
-    let remove = runs.active.as_ref().is_some_and(|run| run.run_id == run_id);
-    if remove {
-        runs.active = None;
+    let should_remove = runs
+        .active
+        .get(session_id)
+        .is_some_and(|active| active.run_id == run_id);
+    if should_remove {
+        runs.active.remove(session_id);
     }
 }
 
@@ -554,35 +875,36 @@ async fn load_session_run_input(
     })
 }
 
-async fn has_active_run(state: &AppState) -> bool {
-    let runs = state.runs.lock().await;
-    runs.active.is_some()
-}
-
-async fn active_run_session_id(state: &AppState) -> Option<String> {
-    let runs = state.runs.lock().await;
-    runs.active.as_ref().map(|active| active.session_id.clone())
-}
-
-async fn attach_to_active_run(
+async fn attach_to_runtime(
     state: &AppState,
-    session_id: &str,
     run_signal_tx: mpsc::UnboundedSender<Value>,
     ws_sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
 ) -> anyhow::Result<()> {
-    let replay = {
+    let (mut replay, queue_payloads) = {
         let mut runs = state.runs.lock().await;
-        let Some(active) = runs.active.as_mut() else {
-            return Ok(());
-        };
-        if active.session_id != session_id {
-            return Ok(());
-        }
-        active.subscribers.push(run_signal_tx);
-        active.events.clone()
+        runs.subscribers.push(run_signal_tx);
+
+        let mut replay: Vec<Value> = runs
+            .active
+            .values()
+            .flat_map(|active| active.events.clone())
+            .collect();
+        replay.sort_by_key(|payload| payload.get("run_id").and_then(Value::as_u64).unwrap_or(0));
+
+        let queue_payloads: Vec<Value> = runs
+            .queues
+            .iter()
+            .map(|(session_id, queue)| build_queue_updated_payload(session_id, queue))
+            .collect();
+
+        (replay, queue_payloads)
     };
 
-    for payload in replay {
+    for payload in replay.drain(..) {
+        ws_sink.send(Message::text(payload.to_string())).await?;
+    }
+
+    for payload in queue_payloads {
         ws_sink.send(Message::text(payload.to_string())).await?;
     }
 
@@ -590,33 +912,74 @@ async fn attach_to_active_run(
 }
 
 async fn stop_active_run(state: &AppState, reason: &str, session_id: Option<&str>) -> bool {
-    let run = {
-        let mut runs = state.runs.lock().await;
-        let Some(active) = runs.active.take() else {
-            return false;
-        };
-        if let Some(requested_sid) = session_id {
-            if active.session_id != requested_sid {
-                runs.active = Some(active);
-                return false;
-            }
-        }
-        active
+    let requested_session_id = session_id.map(str::to_string);
+    let Some(requested_session_id) = requested_session_id else {
+        return false;
     };
 
-    let payload = serde_json::json!({
-        "type": "stopped",
-        "reason": reason,
-        "session_id": run.session_id,
-    });
-    for sub in &run.subscribers {
-        let _ = sub.send(payload.clone());
+    let run = {
+        let mut runs = state.runs.lock().await;
+        let queue_cleared = if let Some(queue) = runs.queues.get_mut(&requested_session_id) {
+            let had_items = !queue.is_empty();
+            if had_items {
+                queue.clear();
+                let payload = build_queue_updated_payload(&requested_session_id, queue);
+                broadcast_payload_locked(&mut runs, payload);
+            }
+            had_items
+        } else {
+            false
+        };
+
+        if queue_cleared {
+            runs.queues.remove(&requested_session_id);
+        }
+
+        runs.active.remove(&requested_session_id)
+    };
+
+    let Some(run) = run else {
+        return false;
+    };
+
+    let stopped_payload = with_run_scope(
+        serde_json::json!({
+            "type": "stopped",
+            "reason": reason,
+        }),
+        &requested_session_id,
+        run.run_id,
+    );
+    {
+        let mut runs = state.runs.lock().await;
+        broadcast_payload_locked(&mut runs, stopped_payload);
+    }
+
+    let stop_note = match reason {
+        "user_cancelled" => "Stopped by user.".to_string(),
+        other => format!("Stopped: {}", other),
+    };
+    if let Err(err) = append_session_messages(
+        state,
+        &requested_session_id,
+        &[ChatMessage::assistant(&stop_note)],
+    )
+    .await
+    {
+        broadcast_session_error(
+            state,
+            &requested_session_id,
+            &format!("Failed to persist stop message: {}", err),
+        )
+        .await;
     }
 
     run.agent_task.abort();
     run.event_task.abort();
     let _ = run.agent_task.await;
     let _ = run.event_task.await;
+
+    maybe_start_queued_runs(state.clone()).await;
     true
 }
 
@@ -748,16 +1111,21 @@ async fn handle_tool_approval_decision(
 
     let approval_tx = {
         let mut runs = state.runs.lock().await;
-        let Some(active) = runs.active.as_mut() else {
-            anyhow::bail!("no active run for tool approval decision");
-        };
-        if !active.pending_approval_ids.remove(&request_id) {
-            anyhow::bail!(
+        let mut found: Option<mpsc::UnboundedSender<ToolApprovalDecision>> = None;
+
+        for active in runs.active.values_mut() {
+            if active.pending_approval_ids.remove(&request_id) {
+                found = Some(active.approval_tx.clone());
+                break;
+            }
+        }
+
+        found.ok_or_else(|| {
+            anyhow::anyhow!(
                 "unknown or expired tool approval request_id '{}'",
                 request_id
-            );
-        }
-        active.approval_tx.clone()
+            )
+        })?
     };
 
     approval_tx
@@ -816,4 +1184,618 @@ fn required_field<'a>(value: Option<&'a str>, field_name: &str) -> anyhow::Resul
         .map(str::trim)
         .filter(|v| !v.is_empty())
         .ok_or_else(|| anyhow::anyhow!("missing required field '{}'", field_name))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use uuid::Uuid;
+
+    use crate::agent::Agent;
+    use crate::config::{PermissionsConfig, ToolPermissionsConfig};
+    use crate::permissions::PermissionEngine;
+    use crate::prompt::{PromptLimits, PromptManager};
+    use crate::providers::{ChatMessage, ChatResponse, Provider, ToolSpec};
+    use crate::session::SessionManager;
+    use crate::tools::ToolCallStatus;
+    use crate::tools::ToolRegistry;
+
+    struct WsTestProvider;
+
+    #[async_trait::async_trait]
+    impl Provider for WsTestProvider {
+        fn supports_native_tools(&self) -> bool {
+            true
+        }
+
+        async fn chat(
+            &self,
+            messages: &[ChatMessage],
+            _tools: Option<&[ToolSpec]>,
+            _model: &str,
+            _temperature: f64,
+        ) -> anyhow::Result<ChatResponse> {
+            let prompt = messages
+                .iter()
+                .rev()
+                .find(|message| message.role == "user")
+                .map(|message| message.content.trim().to_string())
+                .unwrap_or_default();
+
+            if prompt.starts_with("slow-ok:") {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            } else if prompt.starts_with("slow-fail:") {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                anyhow::bail!("mock failure for {}", prompt);
+            }
+
+            Ok(ChatResponse {
+                text: Some(format!("mock-backend: {}", prompt)),
+                tool_calls: Vec::new(),
+                usage: None,
+            })
+        }
+    }
+
+    fn temp_workspace(name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("rika-ws-test-{}-{}", name, Uuid::new_v4()));
+        fs::create_dir_all(&path).expect("create temp workspace");
+        path
+    }
+
+    fn test_state(workspace: &PathBuf, max_concurrent_sessions: usize) -> AppState {
+        let provider: Box<dyn Provider> = Box::new(WsTestProvider);
+        let agent = Arc::new(Agent::new(
+            provider,
+            ToolRegistry::new(),
+            "test-model".to_string(),
+            0.1,
+        ));
+        let sessions = Arc::new(tokio::sync::Mutex::new(
+            SessionManager::new(workspace).expect("create sessions"),
+        ));
+        let prompt_manager = Arc::new(
+            PromptManager::new(
+                workspace,
+                false,
+                PromptLimits {
+                    bootstrap_max_chars: 20_000,
+                    bootstrap_total_max_chars: 150_000,
+                },
+            )
+            .expect("create prompt manager"),
+        );
+
+        AppState {
+            agent,
+            sessions,
+            prompt_manager,
+            runs: Arc::new(tokio::sync::Mutex::new(RunManager::new(
+                max_concurrent_sessions,
+            ))),
+            thread_events: tokio::sync::broadcast::channel(64).0,
+            permissions_config: Arc::new(tokio::sync::RwLock::new(PermissionsConfig {
+                enabled: false,
+                tools: ToolPermissionsConfig::default(),
+            })),
+            permission_engine: Arc::new(tokio::sync::RwLock::new(
+                PermissionEngine::disabled_allow_all(),
+            )),
+            config_store: Arc::new(crate::config_store::ConfigStore::new(
+                workspace.join("config.toml"),
+            )),
+            mcp_runtime: Arc::new(crate::mcp_runtime::McpRuntime::new(false, &[])),
+        }
+    }
+
+    async fn current_session_id(state: &AppState) -> String {
+        let mut sessions = state.sessions.lock().await;
+        sessions.reload_from_disk().expect("reload sessions");
+        sessions.current_session_id().to_string()
+    }
+
+    async fn load_session_history(state: &AppState, session_id: &str) -> Vec<ChatMessage> {
+        let mut sessions = state.sessions.lock().await;
+        sessions.reload_from_disk().expect("reload sessions");
+        sessions
+            .load_history(session_id)
+            .expect("load session history")
+    }
+
+    async fn create_session(state: &AppState, display_name: &str) -> String {
+        let mut sessions = state.sessions.lock().await;
+        sessions.reload_from_disk().expect("reload sessions");
+        sessions
+            .create_session(Some(display_name))
+            .expect("create session")
+            .id
+    }
+
+    #[tokio::test]
+    async fn reserve_or_queue_submission_enforces_queue_cap_per_session() {
+        let workspace = temp_workspace("queue-cap");
+        let state = test_state(&workspace, 8);
+        let session_id = current_session_id(&state).await;
+
+        {
+            let mut runs = state.runs.lock().await;
+            runs.starting_sessions.insert(session_id.clone());
+            let queue = runs.queues.entry(session_id.clone()).or_default();
+            for idx in 0..MAX_QUEUED_MESSAGES_PER_SESSION {
+                queue.push_back(QueuedInput {
+                    id: format!("q-{}", idx),
+                    content: format!("queued-{}", idx),
+                });
+            }
+        }
+
+        let err =
+            match reserve_or_queue_submission(&state, &session_id, "overflow".to_string()).await {
+                Ok(_) => panic!("expected queue cap overflow to fail"),
+                Err(err) => err.to_string(),
+            };
+        assert!(err.contains("Queue is full"));
+    }
+
+    #[tokio::test]
+    async fn cancel_queued_inputs_removes_target_and_clear_all() {
+        let workspace = temp_workspace("queue-cancel");
+        let state = test_state(&workspace, 8);
+        let session_id = current_session_id(&state).await;
+        let (subscriber_tx, mut subscriber_rx) = mpsc::unbounded_channel::<Value>();
+
+        {
+            let mut runs = state.runs.lock().await;
+            runs.subscribers.push(subscriber_tx);
+            let queue = runs.queues.entry(session_id.clone()).or_default();
+            queue.push_back(QueuedInput {
+                id: "keep".to_string(),
+                content: "keep".to_string(),
+            });
+            queue.push_back(QueuedInput {
+                id: "drop".to_string(),
+                content: "drop".to_string(),
+            });
+        }
+
+        let removed = cancel_queued_inputs(&state, &session_id, Some("drop")).await;
+        assert!(removed);
+
+        let first_payload = tokio::time::timeout(Duration::from_secs(1), subscriber_rx.recv())
+            .await
+            .expect("queue update should be broadcast")
+            .expect("queue update payload");
+        assert_eq!(
+            first_payload.get("type").and_then(Value::as_str),
+            Some("queue_updated")
+        );
+        assert_eq!(
+            first_payload
+                .get("items")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(1)
+        );
+
+        let cleared = cancel_queued_inputs(&state, &session_id, None).await;
+        assert!(cleared);
+
+        let second_payload = tokio::time::timeout(Duration::from_secs(1), subscriber_rx.recv())
+            .await
+            .expect("clear queue update should be broadcast")
+            .expect("clear queue payload");
+        assert_eq!(
+            second_payload.get("type").and_then(Value::as_str),
+            Some("queue_updated")
+        );
+        assert_eq!(
+            second_payload
+                .get("items")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(0)
+        );
+
+        {
+            let runs = state.runs.lock().await;
+            assert!(runs.queues.get(&session_id).is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn queued_message_auto_dispatches_after_done() {
+        let workspace = temp_workspace("queue-done");
+        let state = test_state(&workspace, 8);
+        let session_id = current_session_id(&state).await;
+        let first_prompt = "slow-ok:first".to_string();
+        let second_prompt = "second-after-done".to_string();
+
+        submit_or_queue_message(&state, &session_id, first_prompt.clone())
+            .await
+            .expect("start first run");
+        submit_or_queue_message(&state, &session_id, second_prompt.clone())
+            .await
+            .expect("queue second run");
+
+        {
+            let runs = state.runs.lock().await;
+            assert_eq!(
+                runs.queues
+                    .get(&session_id)
+                    .map(|queue| queue.len())
+                    .unwrap_or(0),
+                1
+            );
+        }
+
+        let mut drained = false;
+        for _ in 0..80 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let (has_active, queue_len) = {
+                let runs = state.runs.lock().await;
+                (
+                    runs.active.contains_key(&session_id),
+                    runs.queues
+                        .get(&session_id)
+                        .map(|queue| queue.len())
+                        .unwrap_or(0),
+                )
+            };
+
+            if !has_active && queue_len == 0 {
+                drained = true;
+                break;
+            }
+        }
+
+        assert!(drained, "queued run should be drained after done");
+
+        let history = load_session_history(&state, &session_id).await;
+        let user_messages: Vec<&str> = history
+            .iter()
+            .filter(|message| message.role == "user")
+            .map(|message| message.content.as_str())
+            .collect();
+        assert_eq!(
+            user_messages,
+            vec![first_prompt.as_str(), second_prompt.as_str()]
+        );
+        assert!(history.iter().any(|message| message.role == "assistant"
+            && message.content == "mock-backend: slow-ok:first"));
+        assert!(history.iter().any(|message| message.role == "assistant"
+            && message.content == "mock-backend: second-after-done"));
+    }
+
+    #[tokio::test]
+    async fn queued_message_is_not_auto_dispatched_after_error() {
+        let workspace = temp_workspace("queue-error");
+        let state = test_state(&workspace, 8);
+        let session_id = current_session_id(&state).await;
+        let first_prompt = "slow-fail:first".to_string();
+        let second_prompt = "second-after-error".to_string();
+
+        submit_or_queue_message(&state, &session_id, first_prompt.clone())
+            .await
+            .expect("start first run");
+        submit_or_queue_message(&state, &session_id, second_prompt.clone())
+            .await
+            .expect("queue second run");
+
+        let mut settled = false;
+        for _ in 0..80 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let (has_active, queue_len) = {
+                let runs = state.runs.lock().await;
+                (
+                    runs.active.contains_key(&session_id),
+                    runs.queues
+                        .get(&session_id)
+                        .map(|queue| queue.len())
+                        .unwrap_or(0),
+                )
+            };
+
+            if !has_active && queue_len == 1 {
+                settled = true;
+                break;
+            }
+        }
+
+        assert!(
+            settled,
+            "queue should remain queued when the active run ends with error"
+        );
+
+        let history = load_session_history(&state, &session_id).await;
+        let user_messages: Vec<&str> = history
+            .iter()
+            .filter(|message| message.role == "user")
+            .map(|message| message.content.as_str())
+            .collect();
+        assert_eq!(user_messages, vec![first_prompt.as_str()]);
+        assert!(history.iter().any(|message| {
+            message.role == "assistant"
+                && message
+                    .content
+                    .contains("Error: mock failure for slow-fail:first")
+        }));
+    }
+
+    #[tokio::test]
+    async fn stop_active_run_clears_queue_and_persists_stop_note() {
+        let workspace = temp_workspace("stop-clears-queue");
+        let state = test_state(&workspace, 8);
+        let session_id = current_session_id(&state).await;
+        let first_prompt = "slow-ok:stop-target".to_string();
+
+        submit_or_queue_message(&state, &session_id, first_prompt.clone())
+            .await
+            .expect("start first run");
+        submit_or_queue_message(&state, &session_id, "queued-after-stop".to_string())
+            .await
+            .expect("queue second run");
+
+        let stopped = stop_active_run(&state, "user_cancelled", Some(&session_id)).await;
+        assert!(stopped);
+
+        for _ in 0..40 {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+            let has_active = {
+                let runs = state.runs.lock().await;
+                runs.active.contains_key(&session_id)
+            };
+            if !has_active {
+                break;
+            }
+        }
+
+        {
+            let runs = state.runs.lock().await;
+            assert!(!runs.active.contains_key(&session_id));
+            assert!(runs.queues.get(&session_id).is_none());
+        }
+
+        let history = load_session_history(&state, &session_id).await;
+        assert!(history
+            .iter()
+            .any(|message| message.role == "assistant" && message.content == "Stopped by user."));
+    }
+
+    #[tokio::test]
+    async fn reserve_or_queue_submission_queues_when_global_capacity_is_full() {
+        let workspace = temp_workspace("capacity-queue");
+        let state = test_state(&workspace, 1);
+        let session_id = current_session_id(&state).await;
+        let (subscriber_tx, mut subscriber_rx) = mpsc::unbounded_channel::<Value>();
+
+        {
+            let mut runs = state.runs.lock().await;
+            runs.starting_sessions.insert("other-session".to_string());
+            runs.subscribers.push(subscriber_tx);
+        }
+
+        let outcome =
+            reserve_or_queue_submission(&state, &session_id, "queued-on-capacity".to_string())
+                .await
+                .expect("queue submission");
+        assert!(matches!(outcome, SubmitOutcome::Queued));
+
+        let payload = tokio::time::timeout(Duration::from_secs(1), subscriber_rx.recv())
+            .await
+            .expect("queue update should be broadcast")
+            .expect("queue update payload");
+        assert_eq!(
+            payload.get("type").and_then(Value::as_str),
+            Some("queue_updated")
+        );
+        assert_eq!(
+            payload
+                .get("session_id")
+                .and_then(Value::as_str)
+                .map(ToString::to_string),
+            Some(session_id.clone())
+        );
+    }
+
+    #[tokio::test]
+    async fn different_sessions_can_run_concurrently_when_capacity_allows() {
+        let workspace = temp_workspace("parallel-sessions");
+        let state = test_state(&workspace, 2);
+        let session_a = current_session_id(&state).await;
+        let session_b = create_session(&state, "parallel-b").await;
+        let prompt_a = "slow-ok:parallel-a".to_string();
+        let prompt_b = "slow-ok:parallel-b".to_string();
+
+        submit_or_queue_message(&state, &session_a, prompt_a.clone())
+            .await
+            .expect("start first session run");
+        submit_or_queue_message(&state, &session_b, prompt_b.clone())
+            .await
+            .expect("start second session run");
+
+        let mut saw_parallel_active = false;
+        for _ in 0..60 {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+            let active_len = {
+                let runs = state.runs.lock().await;
+                runs.active.len()
+            };
+            if active_len >= 2 {
+                saw_parallel_active = true;
+                break;
+            }
+        }
+        assert!(
+            saw_parallel_active,
+            "both sessions should become active concurrently when cap allows"
+        );
+
+        let mut drained = false;
+        for _ in 0..120 {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+            let active_len = {
+                let runs = state.runs.lock().await;
+                runs.active.len()
+            };
+            if active_len == 0 {
+                drained = true;
+                break;
+            }
+        }
+        assert!(drained, "parallel runs should eventually complete");
+
+        let history_a = load_session_history(&state, &session_a).await;
+        let history_b = load_session_history(&state, &session_b).await;
+        assert!(history_a.iter().any(|message| {
+            message.role == "assistant" && message.content == "mock-backend: slow-ok:parallel-a"
+        }));
+        assert!(history_b.iter().any(|message| {
+            message.role == "assistant" && message.content == "mock-backend: slow-ok:parallel-b"
+        }));
+    }
+
+    #[tokio::test]
+    async fn queued_session_waiting_on_global_capacity_starts_after_done() {
+        let workspace = temp_workspace("capacity-autostart");
+        let state = test_state(&workspace, 1);
+        let session_a = current_session_id(&state).await;
+        let session_b = create_session(&state, "capacity-b").await;
+        let prompt_a = "slow-ok:cap-a".to_string();
+        let prompt_b = "cap-b-after-done".to_string();
+
+        submit_or_queue_message(&state, &session_a, prompt_a.clone())
+            .await
+            .expect("start capacity owner run");
+        submit_or_queue_message(&state, &session_b, prompt_b.clone())
+            .await
+            .expect("queue second session prompt");
+
+        {
+            let runs = state.runs.lock().await;
+            assert_eq!(
+                runs.queues
+                    .get(&session_b)
+                    .map(|queue| queue.len())
+                    .unwrap_or(0),
+                1
+            );
+        }
+
+        let mut drained = false;
+        for _ in 0..160 {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+            let (has_active, queued_len) = {
+                let runs = state.runs.lock().await;
+                (
+                    !runs.active.is_empty(),
+                    runs.queues
+                        .get(&session_b)
+                        .map(|queue| queue.len())
+                        .unwrap_or(0),
+                )
+            };
+            if !has_active && queued_len == 0 {
+                drained = true;
+                break;
+            }
+        }
+        assert!(
+            drained,
+            "queued session should auto-start after an active run finishes with done"
+        );
+
+        let history_b = load_session_history(&state, &session_b).await;
+        let user_messages: Vec<&str> = history_b
+            .iter()
+            .filter(|message| message.role == "user")
+            .map(|message| message.content.as_str())
+            .collect();
+        assert_eq!(user_messages, vec![prompt_b.as_str()]);
+        assert!(history_b.iter().any(|message| {
+            message.role == "assistant" && message.content == "mock-backend: cap-b-after-done"
+        }));
+    }
+
+    #[tokio::test]
+    async fn persist_agent_event_appends_tool_call_and_tool_result_messages() {
+        let workspace = temp_workspace("persist-tool-events");
+        let state = test_state(&workspace, 8);
+        let session_id = current_session_id(&state).await;
+
+        let tool_start = AgentEvent::ToolCallStart {
+            call_id: "call-1".to_string(),
+            name: "shell".to_string(),
+            args: serde_json::json!({ "command": "echo hello" }),
+        };
+        persist_agent_event(&state, &session_id, &tool_start)
+            .await
+            .expect("persist tool call start");
+
+        let tool_waiting = AgentEvent::ToolCallResult {
+            call_id: "call-1".to_string(),
+            name: "shell".to_string(),
+            output: "blocked".to_string(),
+            success: false,
+            status: ToolCallStatus::Denied,
+            approval_request_id: Some("req-1".to_string()),
+            awaiting_approval: true,
+        };
+        persist_agent_event(&state, &session_id, &tool_waiting)
+            .await
+            .expect("skip awaiting approval result");
+
+        let tool_result = AgentEvent::ToolCallResult {
+            call_id: "call-1".to_string(),
+            name: "shell".to_string(),
+            output: "hello".to_string(),
+            success: true,
+            status: ToolCallStatus::Success,
+            approval_request_id: None,
+            awaiting_approval: false,
+        };
+        persist_agent_event(&state, &session_id, &tool_result)
+            .await
+            .expect("persist tool call result");
+
+        let history = load_session_history(&state, &session_id).await;
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].role, "assistant");
+        assert_eq!(history[1].role, "tool");
+
+        let assistant_payload: Value =
+            serde_json::from_str(&history[0].content).expect("assistant payload as json");
+        assert_eq!(
+            assistant_payload
+                .get("tool_calls")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(1)
+        );
+        assert_eq!(
+            assistant_payload
+                .pointer("/tool_calls/0/id")
+                .and_then(Value::as_str),
+            Some("call-1")
+        );
+
+        let tool_payload: Value =
+            serde_json::from_str(&history[1].content).expect("tool payload as json");
+        assert_eq!(
+            tool_payload.get("tool_call_id").and_then(Value::as_str),
+            Some("call-1")
+        );
+        assert_eq!(
+            tool_payload.get("content").and_then(Value::as_str),
+            Some("hello")
+        );
+        assert_eq!(
+            tool_payload.get("status").and_then(Value::as_str),
+            Some("success")
+        );
+    }
 }

@@ -23,7 +23,7 @@ type CommandPaletteProps = {
 
 export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
   const navigate = useNavigate();
-  const { switchThread, state } = useAppStore();
+  const { state } = useAppStore();
   const [search, setSearch] = useState("");
 
   const handleOpenChange = (nextOpen: boolean): void => {
@@ -118,10 +118,8 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
                   return (
                     <CommandItem
                       key={thread.id}
-                      disabled={state.isWaiting}
                       onSelect={() => {
-                        switchThread(thread.id);
-                        navigate({ to: "/" });
+                        navigate({ to: "/", search: { session: thread.id } });
                         closeAndReset();
                       }}
                       value={`${thread.display_name} ${thread.id} ${index + 1}`}

@@ -23,7 +23,7 @@ function trimSessionTitle(title: string): string {
 
 export function LeftRail({ onNavigate, onOpenCommandPalette }: LeftRailProps) {
   const navigate = useNavigate();
-  const { state, createThread, switchThread } = useAppStore();
+  const { state, createThread } = useAppStore();
   const threadOrderRef = useRef<Map<string, number>>(new Map());
   const nextOrderRef = useRef(0);
 
@@ -93,9 +93,8 @@ export function LeftRail({ onNavigate, onOpenCommandPalette }: LeftRailProps) {
                   type="button"
                   key={thread.id}
                   onClick={() => {
-                    switchThread(thread.id);
+                    navigate({ to: "/", search: { session: thread.id } });
                     onNavigate?.();
-                    navigate({ to: "/" });
                   }}
                   className={cn(
                     "flex w-full min-w-0 items-center gap-2 overflow-hidden rounded-sm px-2 py-2 text-left text-sm transition-colors",
@@ -104,7 +103,6 @@ export function LeftRail({ onNavigate, onOpenCommandPalette }: LeftRailProps) {
                       ? "bg-foreground/10 text-foreground"
                       : "text-foreground/90",
                   )}
-                  disabled={state.isWaiting}
                   title={thread.display_name}
                 >
                   <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap">

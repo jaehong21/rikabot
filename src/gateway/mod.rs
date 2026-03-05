@@ -2,6 +2,7 @@ pub mod rest;
 pub mod ws;
 
 use std::collections::HashSet;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -14,6 +15,7 @@ use axum::{
 };
 use mime_guess::from_path;
 use rust_embed::{EmbeddedFile, RustEmbed};
+use serde::Serialize;
 use serde_json::Value;
 use tokio::{
     sync::{broadcast, mpsc},
@@ -33,11 +35,15 @@ use crate::session::SessionManager;
 
 // ── AppState ────────────────────────────────────────────────────────────────
 
+#[derive(Debug, Clone, Serialize)]
+pub struct QueuedInput {
+    pub id: String,
+    pub content: String,
+}
+
 pub struct ActiveRunState {
     pub run_id: u64,
-    pub session_id: String,
     pub events: Vec<Value>,
-    pub subscribers: Vec<mpsc::UnboundedSender<Value>>,
     pub approval_tx: mpsc::UnboundedSender<ToolApprovalDecision>,
     pub pending_approval_ids: HashSet<String>,
     pub agent_task: JoinHandle<()>,
@@ -46,15 +52,29 @@ pub struct ActiveRunState {
 
 pub struct RunManager {
     pub next_run_id: u64,
-    pub active: Option<ActiveRunState>,
+    pub max_concurrent_sessions: usize,
+    pub active: HashMap<String, ActiveRunState>,
+    pub starting_sessions: HashSet<String>,
+    pub queues: HashMap<String, VecDeque<QueuedInput>>,
+    pub subscribers: Vec<mpsc::UnboundedSender<Value>>,
+}
+
+impl RunManager {
+    pub fn new(max_concurrent_sessions: usize) -> Self {
+        Self {
+            next_run_id: 1,
+            max_concurrent_sessions: max_concurrent_sessions.max(1),
+            active: HashMap::new(),
+            starting_sessions: HashSet::new(),
+            queues: HashMap::new(),
+            subscribers: Vec::new(),
+        }
+    }
 }
 
 impl Default for RunManager {
     fn default() -> Self {
-        Self {
-            next_run_id: 1,
-            active: None,
-        }
+        Self::new(8)
     }
 }
 
@@ -197,13 +217,16 @@ pub async fn serve(
     permission_engine: Arc<tokio::sync::RwLock<PermissionEngine>>,
     config_store: Arc<ConfigStore>,
     mcp_runtime: Arc<McpRuntime>,
+    max_concurrent_sessions: usize,
 ) -> Result<()> {
     let (thread_events, _) = broadcast::channel::<Value>(64);
     let state = AppState {
         agent,
         sessions,
         prompt_manager,
-        runs: Arc::new(tokio::sync::Mutex::new(RunManager::default())),
+        runs: Arc::new(tokio::sync::Mutex::new(RunManager::new(
+            max_concurrent_sessions,
+        ))),
         thread_events,
         permissions_config,
         permission_engine,

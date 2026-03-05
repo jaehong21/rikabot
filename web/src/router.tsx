@@ -22,6 +22,18 @@ export type SettingsSearch = {
   section?: SettingsSectionId;
 };
 
+export type ChatSearch = {
+  session?: string;
+};
+
+function normalizeChatSearch(search: Record<string, unknown>): ChatSearch {
+  const session = search.session;
+  if (typeof session === "string" && session.trim().length > 0) {
+    return { session };
+  }
+  return {};
+}
+
 function normalizeSettingsSearch(
   search: Record<string, unknown>,
 ): SettingsSearch {
@@ -42,6 +54,7 @@ const rootRoute = createRootRoute({
 const chatRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
+  validateSearch: normalizeChatSearch,
   component: ChatPage,
 });
 

@@ -21,6 +21,7 @@ import type {
   MessageEntry,
   PermissionsState,
   PermissionsResponse,
+  QueuedInput,
   RenameThreadResponse,
   ResponseStats,
   SkillContentResponse,
@@ -56,6 +57,7 @@ type AppState = {
   showReconnectOverlay: boolean;
   toolOutputsExpanded: boolean;
   showToolCalls: boolean;
+  queuedInputs: QueuedInput[];
   permissionsLoaded: boolean;
   permissionsSaving: boolean;
   permissionsEnabled: boolean;
@@ -79,6 +81,7 @@ type AppStore = {
   sendMessage: (text: string) => void;
   runSlashCommand: (raw: string) => boolean;
   requestKillSwitch: () => void;
+  cancelQueuedInput: (queueItemId?: string) => void;
   switchThread: (sessionId: string) => void;
   createThread: (displayName?: string) => void;
   renameThread: (sessionId: string, displayName: string) => void;
@@ -109,6 +112,7 @@ const DEFAULT_STATE: AppState = {
   showReconnectOverlay: false,
   toolOutputsExpanded: true,
   showToolCalls: true,
+  queuedInputs: [],
   permissionsLoaded: false,
   permissionsSaving: false,
   permissionsEnabled: true,
@@ -302,6 +306,9 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
   const activeToolSuccessCountRef = useRef(0);
   const activeToolFailureCountRef = useRef(0);
   const activeToolDeniedCountRef = useRef(0);
+  const runningSessionsRef = useRef<Set<string>>(new Set());
+  const killRequestedSessionsRef = useRef<Set<string>>(new Set());
+  const queueBySessionRef = useRef<Record<string, QueuedInput[]>>({});
 
   useEffect(() => {
     stateRef.current = state;
@@ -338,6 +345,21 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         ...prev,
         threads: Array.isArray(nextThreads) ? [...nextThreads] : prev.threads,
         currentSessionId: currentId ?? prev.currentSessionId,
+        isWaiting: ((): boolean => {
+          const sid = currentId ?? prev.currentSessionId;
+          return Boolean(sid && runningSessionsRef.current.has(sid));
+        })(),
+        killRequested: ((): boolean => {
+          const sid = currentId ?? prev.currentSessionId;
+          return Boolean(sid && killRequestedSessionsRef.current.has(sid));
+        })(),
+        queuedInputs: ((): QueuedInput[] => {
+          const sid = currentId ?? prev.currentSessionId;
+          if (!sid) {
+            return [];
+          }
+          return [...(queueBySessionRef.current[sid] ?? [])];
+        })(),
       }));
     },
     [],
@@ -608,13 +630,20 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
   );
 
   const hydrateCurrentThread = useCallback(
-    (history: HistoryMessage[]): void => {
+    (sessionId: string | null, history: HistoryMessage[]): void => {
       const toolOutputsExpanded = stateRef.current.toolOutputsExpanded;
       setState((prev) => ({
         ...prev,
         entries: hydrateEntriesFromHistory(history, toolOutputsExpanded),
-        isWaiting: false,
-        killRequested: false,
+        isWaiting: Boolean(
+          sessionId && runningSessionsRef.current.has(sessionId),
+        ),
+        killRequested: Boolean(
+          sessionId && killRequestedSessionsRef.current.has(sessionId),
+        ),
+        queuedInputs: sessionId
+          ? [...(queueBySessionRef.current[sessionId] ?? [])]
+          : [],
       }));
       finishCurrentBubble();
       resetActiveResponseState();
@@ -676,34 +705,54 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
   );
 
   const onError = useCallback(
-    (message: string): void => {
+    (message: string, sessionId?: string): void => {
+      if (sessionId) {
+        runningSessionsRef.current.delete(sessionId);
+        killRequestedSessionsRef.current.delete(sessionId);
+      }
+
+      const currentSessionId = stateRef.current.currentSessionId;
+      const shouldRender = !sessionId || sessionId === currentSessionId;
+
       setState((prev) => ({
         ...prev,
-        entries: [
-          ...prev.entries,
-          {
-            id: nextId(),
-            kind: "message",
-            role: "assistant",
-            text: `Error: ${message}`,
-            error: true,
-          } as MessageEntry,
-        ],
-        isWaiting: false,
-        killRequested: false,
+        entries: shouldRender
+          ? [
+              ...prev.entries,
+              {
+                id: nextId(),
+                kind: "message",
+                role: "assistant",
+                text: `Error: ${message}`,
+                error: true,
+              } as MessageEntry,
+            ]
+          : prev.entries,
+        isWaiting: shouldRender ? false : prev.isWaiting,
+        killRequested: shouldRender ? false : prev.killRequested,
         permissionsSaving: false,
         skillsSaving: false,
         skillContentLoadingPath: null,
       }));
-      finishCurrentBubble();
-      resetActiveResponseState();
+
+      if (shouldRender) {
+        finishCurrentBubble();
+        resetActiveResponseState();
+      }
     },
     [finishCurrentBubble, nextId, resetActiveResponseState],
   );
 
   const onUserMessage = useCallback(
-    (text: string): void => {
+    (sessionId: string, text: string): void => {
       if (!text.trim()) {
+        return;
+      }
+
+      runningSessionsRef.current.add(sessionId);
+      killRequestedSessionsRef.current.delete(sessionId);
+
+      if (sessionId !== stateRef.current.currentSessionId) {
         return;
       }
 
@@ -719,6 +768,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
           } as MessageEntry,
         ],
         isWaiting: true,
+        killRequested: false,
       }));
 
       activeResponseStartedAtRef.current = Date.now();
@@ -732,7 +782,11 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
   );
 
   const onChunk = useCallback(
-    (text: string): void => {
+    (sessionId: string, text: string): void => {
+      if (sessionId !== stateRef.current.currentSessionId) {
+        return;
+      }
+
       if (!activeResponseStartedAtRef.current) {
         activeResponseStartedAtRef.current = Date.now();
       }
@@ -774,7 +828,11 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
   );
 
   const onToolCallStart = useCallback(
-    (callId: string, name: string, args: unknown): void => {
+    (sessionId: string, callId: string, name: string, args: unknown): void => {
+      if (sessionId !== stateRef.current.currentSessionId) {
+        return;
+      }
+
       if (!activeResponseStartedAtRef.current) {
         activeResponseStartedAtRef.current = Date.now();
       }
@@ -805,62 +863,73 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
     [finishCurrentBubble, nextId],
   );
 
-  const onToolCallResult = useCallback((event: ToolCallResultEvent): void => {
-    if (!activeResponseStartedAtRef.current) {
-      activeResponseStartedAtRef.current = Date.now();
-    }
-
-    const status = normalizeToolStatus(event.status, Boolean(event.success));
-    const awaitingApproval = Boolean(event.awaiting_approval);
-
-    if (!awaitingApproval) {
-      if (status === "success") activeToolSuccessCountRef.current += 1;
-      if (status === "denied") activeToolDeniedCountRef.current += 1;
-      if (status === "failed") activeToolFailureCountRef.current += 1;
-    }
-
-    setState((prev) => {
-      const idx = findToolIndex(
-        prev.entries,
-        event.call_id ?? "",
-        event.name ?? "",
-      );
-      if (idx === -1) {
-        return {
-          ...prev,
-          isWaiting: true,
-        };
+  const onToolCallResult = useCallback(
+    (sessionId: string, event: ToolCallResultEvent): void => {
+      if (sessionId !== stateRef.current.currentSessionId) {
+        return;
       }
 
-      const updated = [...prev.entries];
-      const entry = updated[idx];
-      if (entry.kind !== "tool") {
-        return {
-          ...prev,
-          isWaiting: true,
-        };
+      if (!activeResponseStartedAtRef.current) {
+        activeResponseStartedAtRef.current = Date.now();
       }
 
-      updated[idx] = {
-        ...entry,
-        output: event.output ?? "",
-        status,
-        awaitingApproval,
-        resolved: !awaitingApproval,
-        approval: awaitingApproval ? entry.approval : undefined,
-        open: entry.open || prev.toolOutputsExpanded,
-      };
+      const status = normalizeToolStatus(event.status, Boolean(event.success));
+      const awaitingApproval = Boolean(event.awaiting_approval);
 
-      return {
-        ...prev,
-        entries: updated,
-        isWaiting: true,
-      };
-    });
-  }, []);
+      if (!awaitingApproval) {
+        if (status === "success") activeToolSuccessCountRef.current += 1;
+        if (status === "denied") activeToolDeniedCountRef.current += 1;
+        if (status === "failed") activeToolFailureCountRef.current += 1;
+      }
+
+      setState((prev) => {
+        const idx = findToolIndex(
+          prev.entries,
+          event.call_id ?? "",
+          event.name ?? "",
+        );
+        if (idx === -1) {
+          return {
+            ...prev,
+            isWaiting: true,
+          };
+        }
+
+        const updated = [...prev.entries];
+        const entry = updated[idx];
+        if (entry.kind !== "tool") {
+          return {
+            ...prev,
+            isWaiting: true,
+          };
+        }
+
+        updated[idx] = {
+          ...entry,
+          output: event.output ?? "",
+          status,
+          awaitingApproval,
+          resolved: !awaitingApproval,
+          approval: awaitingApproval ? entry.approval : undefined,
+          open: entry.open || prev.toolOutputsExpanded,
+        };
+
+        return {
+          ...prev,
+          entries: updated,
+          isWaiting: true,
+        };
+      });
+    },
+    [],
+  );
 
   const onToolApprovalRequired = useCallback(
-    (event: ToolApprovalRequiredEvent): void => {
+    (sessionId: string, event: ToolApprovalRequiredEvent): void => {
+      if (sessionId !== stateRef.current.currentSessionId) {
+        return;
+      }
+
       const callId = event.call_id ?? "";
       const name = event.name ?? "";
       const requestId = event.request_id ?? "";
@@ -924,7 +993,13 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const onDone = useCallback(
-    (event: DoneEvent): void => {
+    (sessionId: string, event: DoneEvent): void => {
+      runningSessionsRef.current.delete(sessionId);
+      killRequestedSessionsRef.current.delete(sessionId);
+      if (sessionId !== stateRef.current.currentSessionId) {
+        return;
+      }
+
       const stats = buildResponseStats(event);
       const fullResponse = event.full_response ?? "";
 
@@ -982,7 +1057,13 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
   );
 
   const onStopped = useCallback(
-    (event: StoppedEvent): void => {
+    (sessionId: string, event: StoppedEvent): void => {
+      runningSessionsRef.current.delete(sessionId);
+      killRequestedSessionsRef.current.delete(sessionId);
+      if (sessionId !== stateRef.current.currentSessionId) {
+        return;
+      }
+
       setState((prev) => ({
         ...prev,
         entries: prev.entries.map((entry) => {
@@ -1014,33 +1095,77 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
     [finishCurrentBubble, onError, resetActiveResponseState],
   );
 
+  const onQueueUpdated = useCallback(
+    (sessionId: string, items: QueuedInput[]): void => {
+      queueBySessionRef.current[sessionId] = [...items];
+      if (sessionId !== stateRef.current.currentSessionId) {
+        return;
+      }
+      setState((prev) => ({
+        ...prev,
+        queuedInputs: [...items],
+      }));
+    },
+    [],
+  );
+
   const handleEvent = useCallback(
     (event: ServerEvent): void => {
+      const rawSessionId =
+        typeof (event as { session_id?: unknown }).session_id === "string"
+          ? ((event as { session_id?: string }).session_id ?? "").trim()
+          : "";
+      const scopedSessionId =
+        rawSessionId || stateRef.current.currentSessionId || "";
+
       switch (event.type) {
         case "user_message":
-          onUserMessage(event.content ?? "");
+          if (scopedSessionId) {
+            onUserMessage(scopedSessionId, event.content ?? "");
+          }
           return;
         case "chunk":
-          onChunk(event.content ?? "");
+          if (scopedSessionId) {
+            onChunk(scopedSessionId, event.content ?? "");
+          }
           return;
         case "tool_call_start":
-          onToolCallStart(
-            event.call_id ?? "",
-            event.name ?? "",
-            event.args ?? "",
-          );
+          if (scopedSessionId) {
+            onToolCallStart(
+              scopedSessionId,
+              event.call_id ?? "",
+              event.name ?? "",
+              event.args ?? "",
+            );
+          }
           return;
         case "tool_call_result":
-          onToolCallResult(event);
+          if (scopedSessionId) {
+            onToolCallResult(scopedSessionId, event);
+          }
           return;
         case "tool_approval_required":
-          onToolApprovalRequired(event);
+          if (scopedSessionId) {
+            onToolApprovalRequired(scopedSessionId, event);
+          }
           return;
         case "done":
-          onDone(event);
+          if (scopedSessionId) {
+            onDone(scopedSessionId, event);
+          }
           return;
         case "stopped":
-          onStopped(event);
+          if (scopedSessionId) {
+            onStopped(scopedSessionId, event);
+          }
+          return;
+        case "queue_updated":
+          if (scopedSessionId) {
+            onQueueUpdated(
+              scopedSessionId,
+              Array.isArray(event.items) ? event.items : [],
+            );
+          }
           return;
         case "thread_list":
           if (Array.isArray(event.sessions)) {
@@ -1055,7 +1180,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
           applyMcpStatus(event.mcp);
           return;
         case "error":
-          onError(event.message ?? "Unknown error");
+          onError(event.message ?? "Unknown error", rawSessionId || undefined);
       }
     },
     [
@@ -1065,6 +1190,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       onChunk,
       onDone,
       onError,
+      onQueueUpdated,
       onStopped,
       onToolApprovalRequired,
       onToolCallResult,
@@ -1101,10 +1227,17 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
     wsRef.current = socket;
 
     socket.onopen = () => {
+      runningSessionsRef.current.clear();
+      killRequestedSessionsRef.current.clear();
+      queueBySessionRef.current = {};
+
       setState((prev) => ({
         ...prev,
         connectionState: "connected",
         showReconnectOverlay: false,
+        isWaiting: false,
+        killRequested: false,
+        queuedInputs: [],
       }));
 
       reconnectDelayRef.current = 1000;
@@ -1133,9 +1266,9 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
             const historyRes = await axiosInstance.get<ThreadMessagesResponse>(
               `/api/threads/${encodeURIComponent(nextSessionId)}/messages`,
             );
-            hydrateCurrentThread(historyRes.data.history ?? []);
+            hydrateCurrentThread(nextSessionId, historyRes.data.history ?? []);
           } else {
-            hydrateCurrentThread([]);
+            hydrateCurrentThread(null, []);
           }
           applyPermissionsState(permissionsRes.data.permissions, []);
           applySkillsStatus(skillsRes.data.skills, []);
@@ -1307,33 +1440,54 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
 
   const requestKillSwitch = useCallback((): void => {
     const snapshot = stateRef.current;
+    const sessionId = snapshot.currentSessionId;
+    const isRunning = Boolean(
+      sessionId && runningSessionsRef.current.has(sessionId),
+    );
+    const killRequested = Boolean(
+      sessionId && killRequestedSessionsRef.current.has(sessionId),
+    );
     if (
       snapshot.connectionState !== "connected" ||
-      !snapshot.isWaiting ||
-      snapshot.killRequested
+      !sessionId ||
+      !isRunning ||
+      killRequested
     ) {
       return;
     }
 
+    killRequestedSessionsRef.current.add(sessionId);
     setState((prev) => ({ ...prev, killRequested: true }));
     sendControl({
       type: "kill_switch",
-      session_id: snapshot.currentSessionId,
+      session_id: sessionId,
     });
   }, [sendControl]);
+
+  const cancelQueuedInput = useCallback(
+    (queueItemId?: string): void => {
+      const snapshot = stateRef.current;
+      const sessionId = snapshot.currentSessionId;
+      if (snapshot.connectionState !== "connected" || !sessionId) {
+        return;
+      }
+
+      sendControl({
+        type: "queue_cancel",
+        session_id: sessionId,
+        ...(queueItemId ? { queue_item_id: queueItemId } : {}),
+      });
+    },
+    [sendControl],
+  );
 
   const switchThread = useCallback(
     (sessionId: string): void => {
       const snapshot = stateRef.current;
-      if (snapshot.isWaiting || sessionId === snapshot.currentSessionId) {
+      if (sessionId === snapshot.currentSessionId) {
         return;
       }
 
-      setState((prev) => ({
-        ...prev,
-        isWaiting: false,
-        killRequested: false,
-      }));
       resetActiveResponseState();
       void (async () => {
         try {
@@ -1344,7 +1498,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
             ),
           ]);
           applyThreadStateAndSnapshot(threadsRes.data.sessions, sessionId);
-          hydrateCurrentThread(historyRes.data.history ?? []);
+          hydrateCurrentThread(sessionId, historyRes.data.history ?? []);
         } catch (error) {
           onError(getApiErrorMessage(error));
         }
@@ -1372,7 +1526,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
             response.data.sessions,
             response.data.session.id,
           );
-          hydrateCurrentThread([]);
+          hydrateCurrentThread(response.data.session.id, []);
         } catch (error) {
           onError(getApiErrorMessage(error));
         }
@@ -1408,11 +1562,6 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
     if (!sessionId) {
       return;
     }
-    setState((prev) => ({
-      ...prev,
-      isWaiting: false,
-      killRequested: false,
-    }));
     resetActiveResponseState();
     void (async () => {
       try {
@@ -1423,7 +1572,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
           ),
         ]);
         applyThreadStateAndSnapshot(threadsRes.data.sessions, sessionId);
-        hydrateCurrentThread(clearedRes.data.history ?? []);
+        hydrateCurrentThread(sessionId, clearedRes.data.history ?? []);
       } catch (error) {
         onError(getApiErrorMessage(error));
       }
@@ -1440,11 +1589,6 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       if (!sessionId) {
         return;
       }
-      setState((prev) => ({
-        ...prev,
-        isWaiting: false,
-        killRequested: false,
-      }));
       resetActiveResponseState();
       void (async () => {
         try {
@@ -1470,10 +1614,10 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
             const historyRes = await axiosInstance.get<ThreadMessagesResponse>(
               `/api/threads/${encodeURIComponent(nextSessionId)}/messages`,
             );
-            hydrateCurrentThread(historyRes.data.history ?? []);
+            hydrateCurrentThread(nextSessionId, historyRes.data.history ?? []);
             return;
           }
-          hydrateCurrentThread([]);
+          hydrateCurrentThread(null, []);
         } catch (error) {
           onError(getApiErrorMessage(error));
         }
@@ -1752,18 +1896,16 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       const text = rawText.trim();
       const ws = wsRef.current;
       const sessionId = stateRef.current.currentSessionId;
-      if (
-        !text ||
-        stateRef.current.isWaiting ||
-        !sessionId ||
-        !ws ||
-        ws.readyState !== WebSocket.OPEN
-      ) {
+      if (!text) {
         return;
       }
 
       if (runSlashCommand(text)) {
         resetActiveResponseState();
+        return;
+      }
+
+      if (!sessionId || !ws || ws.readyState !== WebSocket.OPEN) {
         return;
       }
 
@@ -1784,6 +1926,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       sendMessage,
       runSlashCommand,
       requestKillSwitch,
+      cancelQueuedInput,
       switchThread,
       createThread,
       renameThread,
@@ -1808,6 +1951,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       createThread,
       deleteThread,
       loadSkillContent,
+      cancelQueuedInput,
       refreshPermissions,
       refreshSkills,
       refreshThreads,

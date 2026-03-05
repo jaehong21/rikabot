@@ -1,4 +1,5 @@
 import { MessageSquareMore } from "lucide-react";
+import { useNavigate } from "@tanstack/react-router";
 
 import { useAppStore } from "@/context/app-store";
 import { Button } from "@/components/ui/button";
@@ -12,7 +13,8 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 
 export function ThreadsPage() {
-  const { state, switchThread } = useAppStore();
+  const navigate = useNavigate();
+  const { state } = useAppStore();
 
   return (
     <ScrollArea className="h-full">
@@ -46,8 +48,9 @@ export function ThreadsPage() {
                     thread.id === state.currentSessionId ? "default" : "outline"
                   }
                   className="w-full"
-                  onClick={() => switchThread(thread.id)}
-                  disabled={state.isWaiting}
+                  onClick={() =>
+                    navigate({ to: "/", search: { session: thread.id } })
+                  }
                 >
                   <MessageSquareMore className="h-4 w-4" />
                   Open Thread

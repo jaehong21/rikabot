@@ -31,6 +31,6 @@ test("navigates back to chat from settings header action", async ({ page }) => {
   await page.goto("/settings?section=permissions");
 
   await page.getByRole("button", { name: "Back to chat" }).click();
-  await expect(page).toHaveURL("/");
-  await expect(page.getByText("Welcome to Rika")).toBeVisible();
+  await expect(page).toHaveURL(/\/(\?session=.*)?$/);
+  await expect(page.locator("textarea").first()).toBeVisible();
 });

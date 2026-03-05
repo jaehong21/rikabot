@@ -13,6 +13,11 @@ export type HistoryMessage = {
   content: string;
 };
 
+export type QueuedInput = {
+  id: string;
+  content: string;
+};
+
 export type TokenUsage = {
   prompt_tokens: number;
   completion_tokens: number;
@@ -114,6 +119,8 @@ export type SkillsStatusSnapshot = {
 
 export type DoneEvent = {
   type: "done";
+  session_id?: string;
+  run_id?: number;
   full_response?: string;
   elapsed_ms?: number;
   tool_call_count?: number;
@@ -127,10 +134,13 @@ export type StoppedEvent = {
   type: "stopped";
   reason?: string;
   session_id?: string;
+  run_id?: number;
 };
 
 export type ToolCallStartEvent = {
   type: "tool_call_start";
+  session_id?: string;
+  run_id?: number;
   call_id?: string;
   name?: string;
   args?: unknown;
@@ -138,6 +148,8 @@ export type ToolCallStartEvent = {
 
 export type ToolCallResultEvent = {
   type: "tool_call_result";
+  session_id?: string;
+  run_id?: number;
   call_id?: string;
   name?: string;
   output?: string;
@@ -149,6 +161,8 @@ export type ToolCallResultEvent = {
 
 export type ToolApprovalRequiredEvent = {
   type: "tool_approval_required";
+  session_id?: string;
+  run_id?: number;
   request_id?: string;
   call_id?: string;
   name?: string;
@@ -158,14 +172,24 @@ export type ToolApprovalRequiredEvent = {
 };
 
 export type ServerEvent =
-  | { type: "user_message"; content?: string }
-  | { type: "chunk"; content?: string }
+  | {
+      type: "user_message";
+      session_id?: string;
+      run_id?: number;
+      content?: string;
+    }
+  | { type: "chunk"; session_id?: string; run_id?: number; content?: string }
   | ToolCallStartEvent
   | ToolCallResultEvent
   | ToolApprovalRequiredEvent
   | DoneEvent
   | StoppedEvent
-  | { type: "error"; message?: string }
+  | { type: "error"; session_id?: string; run_id?: number; message?: string }
+  | {
+      type: "queue_updated";
+      session_id?: string;
+      items?: QueuedInput[];
+    }
   | {
       type: "thread_list";
       sessions?: ThreadRecord[];

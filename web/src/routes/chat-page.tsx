@@ -6,7 +6,9 @@ import {
   Check,
   Copy,
   Square,
+  X,
 } from "lucide-react";
+import { useNavigate, useSearch } from "@tanstack/react-router";
 
 import { useAppStore } from "@/context/app-store";
 import { renderMarkdown } from "@/lib/markdown";
@@ -182,10 +184,14 @@ function summarizeToolGroup(entries: ToolEntry[]): string {
 }
 
 export function ChatPage() {
+  const navigate = useNavigate();
+  const search = useSearch({ from: "/" });
   const {
     state,
     sendMessage,
     requestKillSwitch,
+    cancelQueuedInput,
+    switchThread,
     toggleToolOpen,
     updateApprovalRule,
     submitToolApproval,
@@ -201,6 +207,7 @@ export function ChatPage() {
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const copyResetTimeoutRef = useRef<number | null>(null);
+  const pendingQuerySessionSwitchRef = useRef<string | null>(null);
   const scrollStateRef = useRef<{
     initialized: boolean;
     sessionId: string | null;
@@ -214,9 +221,7 @@ export function ChatPage() {
   });
 
   const canSend =
-    !state.isWaiting &&
-    state.connectionState === "connected" &&
-    draft.trim().length > 0;
+    state.connectionState === "connected" && draft.trim().length > 0;
   const canKill =
     state.isWaiting &&
     state.connectionState === "connected" &&
@@ -242,6 +247,57 @@ export function ChatPage() {
         : previous;
     });
   }, [showSlashSuggestions, slashSuggestions]);
+
+  useEffect(() => {
+    const querySession =
+      typeof search.session === "string" ? search.session.trim() : "";
+
+    if (!querySession) {
+      pendingQuerySessionSwitchRef.current = null;
+      return;
+    }
+    if (state.currentSessionId === querySession) {
+      pendingQuerySessionSwitchRef.current = null;
+      return;
+    }
+    if (pendingQuerySessionSwitchRef.current === querySession) {
+      return;
+    }
+    if (!state.threads.some((thread) => thread.id === querySession)) {
+      pendingQuerySessionSwitchRef.current = null;
+      return;
+    }
+
+    pendingQuerySessionSwitchRef.current = querySession;
+    switchThread(querySession);
+  }, [search.session, state.currentSessionId, state.threads, switchThread]);
+
+  useEffect(() => {
+    const querySession =
+      typeof search.session === "string" ? search.session.trim() : "";
+    const hasQuerySession =
+      querySession.length > 0 &&
+      state.threads.some((thread) => thread.id === querySession);
+
+    if (state.threads.length === 0) {
+      return;
+    }
+
+    const fallbackSessionId =
+      state.currentSessionId ?? state.threads[0]?.id ?? "";
+    const targetSessionId = hasQuerySession ? querySession : fallbackSessionId;
+    if (!targetSessionId) {
+      return;
+    }
+
+    if (querySession !== targetSessionId) {
+      navigate({
+        to: "/",
+        search: { session: targetSessionId },
+        replace: true,
+      });
+    }
+  }, [navigate, search.session, state.currentSessionId, state.threads]);
 
   useEffect(() => {
     const container = transcriptRef.current;
@@ -676,6 +732,46 @@ export function ChatPage() {
             </h1>
           )}
           <div className="rounded-[1.5rem] border border-border/70 bg-input/70 px-4 py-3 transition-all duration-150 hover:border-border hover:bg-input hover:shadow-[0_8px_18px_rgba(20,20,20,0.06)] focus-within:border-border focus-within:bg-input focus-within:shadow-[0_8px_18px_rgba(20,20,20,0.08)]">
+            {state.queuedInputs.length > 0 && (
+              <section className="mb-3 rounded-xl border border-border/70 bg-background/70 p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground">
+                    Queued messages ({state.queuedInputs.length}/5)
+                  </p>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-xs"
+                    onClick={() => cancelQueuedInput()}
+                  >
+                    Clear all
+                  </Button>
+                </div>
+                <div className="mt-2 space-y-1">
+                  {state.queuedInputs.map((queued) => (
+                    <div
+                      key={queued.id}
+                      className="flex items-center gap-2 rounded-lg border border-border/60 bg-input px-2 py-1.5"
+                    >
+                      <p className="line-clamp-1 min-w-0 flex-1 text-xs text-foreground/90">
+                        {queued.content}
+                      </p>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6"
+                        onClick={() => cancelQueuedInput(queued.id)}
+                        aria-label="Cancel queued message"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
             <Popover open={showSlashSuggestions} onOpenChange={() => {}}>
               <PopoverAnchor asChild>
                 <div>
@@ -747,7 +843,6 @@ export function ChatPage() {
                         submit();
                       }
                     }}
-                    disabled={state.isWaiting}
                   />
                 </div>
               </PopoverAnchor>

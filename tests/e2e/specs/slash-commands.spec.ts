@@ -51,7 +51,8 @@ test("focuses composer on global slash and completes by Enter before sending", a
   await page.keyboard.press("Enter");
 
   await expect(input).toHaveValue("/tools");
-  await expect(page.getByText("Welcome to Rika")).toBeVisible();
+  await page.waitForTimeout(200);
+  await expect(page.getByText("mock-e2e: /tools")).toHaveCount(0);
 });
 
 test("shows rename suggestions sourced from backend thread state", async ({

@@ -615,6 +615,7 @@ async fn run_server(config_arg: Option<&str>) -> Result<()> {
         permissions_engine,
         config_store,
         mcp_runtime,
+        config.resolved_max_concurrent_sessions(),
     )
     .await?;
 

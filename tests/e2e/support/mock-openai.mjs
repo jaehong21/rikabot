@@ -82,27 +82,99 @@ async function buildMockResponse(requestBody) {
       ? requestBody.model
       : "mock-model";
 
+  if (promptText.startsWith("e2e-error-slow:")) {
+    await sleep(1_200);
+    return {
+      statusCode: 500,
+      body: {
+        error: {
+          message: `mock-e2e error for ${promptText}`,
+          type: "mock_error",
+        },
+      },
+    };
+  }
+
   if (promptText.startsWith("e2e-slow:")) {
     await sleep(10_000);
     return {
-      id: "chatcmpl-e2e-slow",
-      object: "chat.completion",
-      created: Math.floor(Date.now() / 1000),
-      model,
-      choices: [
-        {
-          index: 0,
-          message: {
-            role: "assistant",
-            content: `mock-e2e: ${promptText}`,
+      statusCode: 200,
+      body: {
+        id: "chatcmpl-e2e-slow",
+        object: "chat.completion",
+        created: Math.floor(Date.now() / 1000),
+        model,
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: `mock-e2e: ${promptText}`,
+            },
+            finish_reason: "stop",
           },
-          finish_reason: "stop",
+        ],
+        usage: {
+          prompt_tokens: 8,
+          completion_tokens: 8,
+          total_tokens: 16,
         },
-      ],
-      usage: {
-        prompt_tokens: 8,
-        completion_tokens: 8,
-        total_tokens: 16,
+      },
+    };
+  }
+
+  if (promptText.startsWith("e2e-nav-slow:")) {
+    await sleep(3_500);
+    return {
+      statusCode: 200,
+      body: {
+        id: "chatcmpl-e2e-nav-slow",
+        object: "chat.completion",
+        created: Math.floor(Date.now() / 1000),
+        model,
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: `mock-e2e: ${promptText}`,
+            },
+            finish_reason: "stop",
+          },
+        ],
+        usage: {
+          prompt_tokens: 8,
+          completion_tokens: 8,
+          total_tokens: 16,
+        },
+      },
+    };
+  }
+
+  if (promptText.startsWith("e2e-queue-slow:")) {
+    await sleep(1_200);
+    return {
+      statusCode: 200,
+      body: {
+        id: "chatcmpl-e2e-queue-slow",
+        object: "chat.completion",
+        created: Math.floor(Date.now() / 1000),
+        model,
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: `mock-e2e: ${promptText}`,
+            },
+            finish_reason: "stop",
+          },
+        ],
+        usage: {
+          prompt_tokens: 8,
+          completion_tokens: 8,
+          total_tokens: 16,
+        },
       },
     };
   }
@@ -112,7 +184,47 @@ async function buildMockResponse(requestBody) {
 
     if (!toolOutput) {
       return {
-        id: "chatcmpl-e2e-tool-1",
+        statusCode: 200,
+        body: {
+          id: "chatcmpl-e2e-tool-1",
+          object: "chat.completion",
+          created: Math.floor(Date.now() / 1000),
+          model,
+          choices: [
+            {
+              index: 0,
+              message: {
+                role: "assistant",
+                content: "Using a tool now.",
+                tool_calls: [
+                  {
+                    id: "call-e2e-shell",
+                    type: "function",
+                    function: {
+                      name: "shell",
+                      arguments: JSON.stringify({
+                        command: "echo e2e-tool-approved",
+                      }),
+                    },
+                  },
+                ],
+              },
+              finish_reason: "tool_calls",
+            },
+          ],
+          usage: {
+            prompt_tokens: 8,
+            completion_tokens: 8,
+            total_tokens: 16,
+          },
+        },
+      };
+    }
+
+    return {
+      statusCode: 200,
+      body: {
+        id: "chatcmpl-e2e-tool-2",
         object: "chat.completion",
         created: Math.floor(Date.now() / 1000),
         model,
@@ -121,21 +233,9 @@ async function buildMockResponse(requestBody) {
             index: 0,
             message: {
               role: "assistant",
-              content: "Using a tool now.",
-              tool_calls: [
-                {
-                  id: "call-e2e-shell",
-                  type: "function",
-                  function: {
-                    name: "shell",
-                    arguments: JSON.stringify({
-                      command: "echo e2e-tool-approved",
-                    }),
-                  },
-                },
-              ],
+              content: `mock-e2e: tool-output:${toolOutput.trim()}`,
             },
-            finish_reason: "tool_calls",
+            finish_reason: "stop",
           },
         ],
         usage: {
@@ -143,28 +243,6 @@ async function buildMockResponse(requestBody) {
           completion_tokens: 8,
           total_tokens: 16,
         },
-      };
-    }
-
-    return {
-      id: "chatcmpl-e2e-tool-2",
-      object: "chat.completion",
-      created: Math.floor(Date.now() / 1000),
-      model,
-      choices: [
-        {
-          index: 0,
-          message: {
-            role: "assistant",
-            content: `mock-e2e: tool-output:${toolOutput.trim()}`,
-          },
-          finish_reason: "stop",
-        },
-      ],
-      usage: {
-        prompt_tokens: 8,
-        completion_tokens: 8,
-        total_tokens: 16,
       },
     };
   }
@@ -174,24 +252,27 @@ async function buildMockResponse(requestBody) {
     : "mock-e2e: empty";
 
   return {
-    id: "chatcmpl-e2e",
-    object: "chat.completion",
-    created: Math.floor(Date.now() / 1000),
-    model,
-    choices: [
-      {
-        index: 0,
-        message: {
-          role: "assistant",
-          content: responseText,
+    statusCode: 200,
+    body: {
+      id: "chatcmpl-e2e",
+      object: "chat.completion",
+      created: Math.floor(Date.now() / 1000),
+      model,
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: "assistant",
+            content: responseText,
+          },
+          finish_reason: "stop",
         },
-        finish_reason: "stop",
+      ],
+      usage: {
+        prompt_tokens: 8,
+        completion_tokens: 8,
+        total_tokens: 16,
       },
-    ],
-    usage: {
-      prompt_tokens: 8,
-      completion_tokens: 8,
-      total_tokens: 16,
     },
   };
 }
@@ -210,7 +291,7 @@ const server = http.createServer(async (req, res) => {
     try {
       const body = await parseBody(req);
       const response = await buildMockResponse(body);
-      sendJson(res, 200, response);
+      sendJson(res, response.statusCode, response.body);
     } catch (error) {
       sendJson(res, 400, {
         error: "Invalid JSON body",
