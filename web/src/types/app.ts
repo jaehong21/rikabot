@@ -177,6 +177,7 @@ export type ServerEvent =
       session_id?: string;
       run_id?: number;
       content?: string;
+      started_at_unix_ms?: number;
     }
   | { type: "chunk"; session_id?: string; run_id?: number; content?: string }
   | ToolCallStartEvent

@@ -201,6 +201,7 @@ export function ChatPage() {
   const [activeSlashSuggestionIndex, setActiveSlashSuggestionIndex] =
     useState(-1);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
+  const [loadingElapsedMs, setLoadingElapsedMs] = useState(0);
   const [openToolGroups, setOpenToolGroups] = useState<Record<string, boolean>>(
     {},
   );
@@ -234,6 +235,20 @@ export function ChatPage() {
     [draft, state.threads],
   );
   const showSlashSuggestions = slashSuggestions.length > 0;
+  const liveElapsedAssistantId = useMemo(() => {
+    if (!state.isWaiting) {
+      return null;
+    }
+    const lastEntry = state.entries[state.entries.length - 1];
+    if (
+      lastEntry &&
+      lastEntry.kind === "message" &&
+      lastEntry.role === "assistant"
+    ) {
+      return lastEntry.id;
+    }
+    return null;
+  }, [state.entries, state.isWaiting]);
 
   useEffect(() => {
     if (!showSlashSuggestions) {
@@ -378,6 +393,24 @@ export function ChatPage() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!state.isWaiting) {
+      setLoadingElapsedMs(0);
+      return;
+    }
+
+    const tick = (): void => {
+      const startedAt = state.waitingStartedAtMs ?? Date.now();
+      setLoadingElapsedMs(Math.max(0, Date.now() - startedAt));
+    };
+
+    tick();
+    const intervalId = window.setInterval(tick, 50);
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [state.isWaiting, state.waitingStartedAtMs]);
+
   const submit = (): void => {
     if (!canSend) {
       return;
@@ -517,6 +550,15 @@ export function ChatPage() {
                   );
                 }
 
+                const persistedElapsedMs = entry.stats?.elapsedMs;
+                const liveElapsedMs =
+                  liveElapsedAssistantId === entry.id ? loadingElapsedMs : null;
+                const elapsedMs =
+                  typeof persistedElapsedMs === "number" &&
+                  persistedElapsedMs >= 0
+                    ? persistedElapsedMs
+                    : liveElapsedMs;
+
                 return (
                   <div key={entry.id} className="flex flex-col gap-1">
                     <article
@@ -531,22 +573,29 @@ export function ChatPage() {
                         }}
                       />
                     </article>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      className="h-6 w-6 text-muted-foreground/60 transition-colors hover:text-foreground/90"
-                      onClick={() => {
-                        handleCopy(entry.id, entry.text);
-                      }}
-                      aria-label="Copy assistant response"
-                    >
-                      {copiedMessageId === entry.id ? (
-                        <Check className="h-3.5 w-3.5" />
-                      ) : (
-                        <Copy className="h-3.5 w-3.5" />
+                    <div className="flex flex-col items-start gap-0.5">
+                      {typeof elapsedMs === "number" && (
+                        <p className="pl-0.5 text-[11px] tabular-nums text-muted-foreground/60">
+                          elapsed: {(elapsedMs / 1000).toFixed(2)} sec
+                        </p>
                       )}
-                    </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6 text-muted-foreground/60 transition-colors hover:text-foreground/90"
+                        onClick={() => {
+                          handleCopy(entry.id, entry.text);
+                        }}
+                        aria-label="Copy assistant response"
+                      >
+                        {copiedMessageId === entry.id ? (
+                          <Check className="h-3.5 w-3.5" />
+                        ) : (
+                          <Copy className="h-3.5 w-3.5" />
+                        )}
+                      </Button>
+                    </div>
                   </div>
                 );
               }
@@ -721,6 +770,9 @@ export function ChatPage() {
                 <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-foreground/70" />
                 <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-foreground/70 [animation-delay:120ms]" />
                 <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-foreground/70 [animation-delay:240ms]" />
+                <span className="ml-1 pb-0.5 text-xs tabular-nums text-muted-foreground/60">
+                  elapsed: {(loadingElapsedMs / 1000).toFixed(2)} sec
+                </span>
               </div>
             )}
             {state.queuedInputs.map((queued) => (

@@ -53,6 +53,7 @@ type AppState = {
   currentSessionId: string | null;
   connectionState: "connecting" | "connected" | "disconnected";
   isWaiting: boolean;
+  waitingStartedAtMs: number | null;
   killRequested: boolean;
   showReconnectOverlay: boolean;
   toolOutputsExpanded: boolean;
@@ -108,6 +109,7 @@ const DEFAULT_STATE: AppState = {
   currentSessionId: null,
   connectionState: "connecting",
   isWaiting: false,
+  waitingStartedAtMs: null,
   killRequested: false,
   showReconnectOverlay: false,
   toolOutputsExpanded: true,
@@ -307,6 +309,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
   const activeToolFailureCountRef = useRef(0);
   const activeToolDeniedCountRef = useRef(0);
   const runningSessionsRef = useRef<Set<string>>(new Set());
+  const runningSessionStartedAtRef = useRef<Record<string, number>>({});
   const killRequestedSessionsRef = useRef<Set<string>>(new Set());
   const queueBySessionRef = useRef<Record<string, QueuedInput[]>>({});
 
@@ -348,6 +351,13 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         isWaiting: ((): boolean => {
           const sid = currentId ?? prev.currentSessionId;
           return Boolean(sid && runningSessionsRef.current.has(sid));
+        })(),
+        waitingStartedAtMs: ((): number | null => {
+          const sid = currentId ?? prev.currentSessionId;
+          if (!sid || !runningSessionsRef.current.has(sid)) {
+            return null;
+          }
+          return runningSessionStartedAtRef.current[sid] ?? null;
         })(),
         killRequested: ((): boolean => {
           const sid = currentId ?? prev.currentSessionId;
@@ -638,6 +648,10 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         isWaiting: Boolean(
           sessionId && runningSessionsRef.current.has(sessionId),
         ),
+        waitingStartedAtMs:
+          sessionId && runningSessionsRef.current.has(sessionId)
+            ? (runningSessionStartedAtRef.current[sessionId] ?? null)
+            : null,
         killRequested: Boolean(
           sessionId && killRequestedSessionsRef.current.has(sessionId),
         ),
@@ -708,6 +722,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
     (message: string, sessionId?: string): void => {
       if (sessionId) {
         runningSessionsRef.current.delete(sessionId);
+        delete runningSessionStartedAtRef.current[sessionId];
         killRequestedSessionsRef.current.delete(sessionId);
       }
 
@@ -729,6 +744,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
             ]
           : prev.entries,
         isWaiting: shouldRender ? false : prev.isWaiting,
+        waitingStartedAtMs: shouldRender ? null : prev.waitingStartedAtMs,
         killRequested: shouldRender ? false : prev.killRequested,
         permissionsSaving: false,
         skillsSaving: false,
@@ -744,13 +760,21 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
   );
 
   const onUserMessage = useCallback(
-    (sessionId: string, text: string): void => {
+    (sessionId: string, text: string, startedAtUnixMs?: number): void => {
       const normalizedText = text.trim();
       if (!normalizedText) {
         return;
       }
 
+      const startMs =
+        typeof startedAtUnixMs === "number" &&
+        Number.isFinite(startedAtUnixMs) &&
+        startedAtUnixMs > 0
+          ? Math.round(startedAtUnixMs)
+          : Date.now();
+
       runningSessionsRef.current.add(sessionId);
+      runningSessionStartedAtRef.current[sessionId] = startMs;
       killRequestedSessionsRef.current.delete(sessionId);
 
       if (sessionId !== stateRef.current.currentSessionId) {
@@ -769,6 +793,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
           return {
             ...prev,
             isWaiting: true,
+            waitingStartedAtMs: startMs,
             killRequested: false,
           };
         }
@@ -785,11 +810,12 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
             } as MessageEntry,
           ],
           isWaiting: true,
+          waitingStartedAtMs: startMs,
           killRequested: false,
         };
       });
 
-      activeResponseStartedAtRef.current = Date.now();
+      activeResponseStartedAtRef.current = startMs;
       activeToolCallCountRef.current = 0;
       activeToolSuccessCountRef.current = 0;
       activeToolFailureCountRef.current = 0;
@@ -808,10 +834,15 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       if (!activeResponseStartedAtRef.current) {
         activeResponseStartedAtRef.current = Date.now();
       }
+      if (!runningSessionStartedAtRef.current[sessionId]) {
+        runningSessionStartedAtRef.current[sessionId] =
+          activeResponseStartedAtRef.current;
+      }
 
       setState((prev) => {
         let entries = [...prev.entries];
         let assistantId = currentAssistantIdRef.current;
+        const startedAtMs = activeResponseStartedAtRef.current ?? Date.now();
 
         if (!assistantId) {
           assistantId = nextId();
@@ -839,6 +870,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
           ...prev,
           entries,
           isWaiting: true,
+          waitingStartedAtMs: prev.waitingStartedAtMs ?? startedAtMs,
         };
       });
     },
@@ -853,6 +885,10 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
 
       if (!activeResponseStartedAtRef.current) {
         activeResponseStartedAtRef.current = Date.now();
+      }
+      if (!runningSessionStartedAtRef.current[sessionId]) {
+        runningSessionStartedAtRef.current[sessionId] =
+          activeResponseStartedAtRef.current;
       }
       finishCurrentBubble();
       activeToolCallCountRef.current += 1;
@@ -876,6 +912,8 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         ...prev,
         entries: [...prev.entries, entry],
         isWaiting: true,
+        waitingStartedAtMs:
+          prev.waitingStartedAtMs ?? activeResponseStartedAtRef.current,
       }));
     },
     [finishCurrentBubble, nextId],
@@ -889,6 +927,10 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
 
       if (!activeResponseStartedAtRef.current) {
         activeResponseStartedAtRef.current = Date.now();
+      }
+      if (!runningSessionStartedAtRef.current[sessionId]) {
+        runningSessionStartedAtRef.current[sessionId] =
+          activeResponseStartedAtRef.current;
       }
 
       const status = normalizeToolStatus(event.status, Boolean(event.success));
@@ -910,6 +952,8 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
           return {
             ...prev,
             isWaiting: true,
+            waitingStartedAtMs:
+              prev.waitingStartedAtMs ?? activeResponseStartedAtRef.current,
           };
         }
 
@@ -919,6 +963,8 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
           return {
             ...prev,
             isWaiting: true,
+            waitingStartedAtMs:
+              prev.waitingStartedAtMs ?? activeResponseStartedAtRef.current,
           };
         }
 
@@ -936,6 +982,8 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
           ...prev,
           entries: updated,
           isWaiting: true,
+          waitingStartedAtMs:
+            prev.waitingStartedAtMs ?? activeResponseStartedAtRef.current,
         };
       });
     },
@@ -1013,6 +1061,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
   const onDone = useCallback(
     (sessionId: string, event: DoneEvent): void => {
       runningSessionsRef.current.delete(sessionId);
+      delete runningSessionStartedAtRef.current[sessionId];
       killRequestedSessionsRef.current.delete(sessionId);
       if (sessionId !== stateRef.current.currentSessionId) {
         return;
@@ -1039,6 +1088,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
               };
             }),
             isWaiting: false,
+            waitingStartedAtMs: null,
             killRequested: false,
           };
         }
@@ -1057,6 +1107,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
               } as MessageEntry,
             ],
             isWaiting: false,
+            waitingStartedAtMs: null,
             killRequested: false,
           };
         }
@@ -1064,6 +1115,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         return {
           ...prev,
           isWaiting: false,
+          waitingStartedAtMs: null,
           killRequested: false,
         };
       });
@@ -1077,6 +1129,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
   const onStopped = useCallback(
     (sessionId: string, event: StoppedEvent): void => {
       runningSessionsRef.current.delete(sessionId);
+      delete runningSessionStartedAtRef.current[sessionId];
       killRequestedSessionsRef.current.delete(sessionId);
       if (sessionId !== stateRef.current.currentSessionId) {
         return;
@@ -1100,6 +1153,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
           };
         }),
         isWaiting: false,
+        waitingStartedAtMs: null,
         killRequested: false,
       }));
 
@@ -1139,7 +1193,11 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       switch (event.type) {
         case "user_message":
           if (scopedSessionId) {
-            onUserMessage(scopedSessionId, event.content ?? "");
+            onUserMessage(
+              scopedSessionId,
+              event.content ?? "",
+              event.started_at_unix_ms,
+            );
           }
           return;
         case "chunk":
@@ -1246,6 +1304,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
 
     socket.onopen = () => {
       runningSessionsRef.current.clear();
+      runningSessionStartedAtRef.current = {};
       killRequestedSessionsRef.current.clear();
       queueBySessionRef.current = {};
 
@@ -1254,6 +1313,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         connectionState: "connected",
         showReconnectOverlay: false,
         isWaiting: false,
+        waitingStartedAtMs: null,
         killRequested: false,
         queuedInputs: [],
       }));

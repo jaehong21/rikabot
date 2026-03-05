@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::{
     extract::{
@@ -516,6 +516,7 @@ async fn spawn_reserved_run(
             serde_json::json!({
                 "type": "user_message",
                 "content": content_for_user_event,
+                "started_at_unix_ms": unix_now_ms(),
             }),
             &session_id,
             run_id,
@@ -759,6 +760,13 @@ fn build_queue_updated_payload(
         "session_id": session_id,
         "items": items,
     })
+}
+
+fn unix_now_ms() -> u64 {
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(duration) => u64::try_from(duration.as_millis()).unwrap_or(u64::MAX),
+        Err(_) => 0,
+    }
 }
 
 fn broadcast_payload_locked(runs: &mut RunManager, payload: Value) {
