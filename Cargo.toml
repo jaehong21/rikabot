@@ -1,6 +1,6 @@
 [package]
 name = "rikabot"
-version = "0.2.1"
+version = "0.3.0"
 description = "Rika is a lightweight, local-first AI assistant platform."
 repository = "https://github.com/jaehong21/rikabot"
 license = "MIT"
