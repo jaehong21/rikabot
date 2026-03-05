@@ -187,6 +187,8 @@ if [[ "$SKIP_GITHUB" == "0" ]]; then
 fi
 
 if [[ "$SKIP_CARGO" == "0" ]]; then
+  run mise run build:fe
+  run mise run build:be
 	run cargo publish --locked --allow-dirty
 fi
 
