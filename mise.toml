@@ -8,7 +8,6 @@ prettier = "latest"
 
 [env]
 RUST_LOG = "info"
-# RUSTFLAGS = "-Awarnings"
 
 [hooks]
 postinstall = '''
@@ -40,10 +39,13 @@ run = "bun run build"
 run = "cargo test"
 [tasks."test:e2e"]
 dir = "{{cwd}}/tests/e2e"
+env = { RUSTFLAGS = "-Awarnings" }
 run = '''
 rm -rf ../../.tmp/e2e # clean up previous test data
 bun install
-bunx playwright install chromium
+if ! ./node_modules/.bin/playwright install --list | grep -q "chromium-"; then
+  ./node_modules/.bin/playwright install chromium
+fi
 bash scripts/prepare-e2e-env.sh
 bun run test --config playwright.config.mjs
 '''
