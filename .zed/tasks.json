@@ -13,7 +13,7 @@
   },
   {
     "label": "Test",
-    "command": "mise run 'test:*'",
+    "command": "mise run test:be && mise run test:e2e",
     "hide": "never",
     "use_new_terminal": true,
     "reveal_target": "center",

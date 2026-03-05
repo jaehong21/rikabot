@@ -16,4 +16,4 @@ command = "mise run 'dev:*'"
 [[actions]]
 name = "Run Test"
 icon = "test"
-command = "mise run 'test:*'"
+command = "mise run test:be && mise run test:e2e"
