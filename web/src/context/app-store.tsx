@@ -314,6 +314,8 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
   const runningSessionStartedAtRef = useRef<Record<string, number>>({});
   const killRequestedSessionsRef = useRef<Set<string>>(new Set());
   const queueBySessionRef = useRef<Record<string, QueuedInput[]>>({});
+  const isBootstrappingRef = useRef(false);
+  const bufferedEventsRef = useRef<ServerEvent[]>([]);
 
   useEffect(() => {
     stateRef.current = state;
@@ -1204,7 +1206,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
     [],
   );
 
-  const handleEvent = useCallback(
+  const applyServerEvent = useCallback(
     (event: ServerEvent): void => {
       const rawSessionId =
         typeof (event as { session_id?: unknown }).session_id === "string"
@@ -1298,6 +1300,26 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
     ],
   );
 
+  const handleEvent = useCallback(
+    (event: ServerEvent): void => {
+      if (isBootstrappingRef.current) {
+        bufferedEventsRef.current.push(event);
+        return;
+      }
+      applyServerEvent(event);
+    },
+    [applyServerEvent],
+  );
+
+  const completeBootstrap = useCallback((): void => {
+    const queued = bufferedEventsRef.current;
+    bufferedEventsRef.current = [];
+    isBootstrappingRef.current = false;
+    for (const event of queued) {
+      applyServerEvent(event);
+    }
+  }, [applyServerEvent]);
+
   const scheduleReconnect = useCallback((): void => {
     if (disposedRef.current || reconnectTimerRef.current) {
       return;
@@ -1326,6 +1348,8 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
     wsRef.current = socket;
 
     socket.onopen = () => {
+      isBootstrappingRef.current = true;
+      bufferedEventsRef.current = [];
       runningSessionsRef.current.clear();
       runningSessionStartedAtRef.current = {};
       killRequestedSessionsRef.current.clear();
@@ -1374,7 +1398,9 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
           }
           applyPermissionsState(permissionsRes.data.permissions, []);
           applySkillsStatus(skillsRes.data.skills, []);
+          completeBootstrap();
         } catch (error) {
+          completeBootstrap();
           onError(getApiErrorMessage(error));
         }
       })();
@@ -1384,6 +1410,8 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       if (disposedRef.current) {
         return;
       }
+      isBootstrappingRef.current = false;
+      bufferedEventsRef.current = [];
       setState((prev) => ({ ...prev, connectionState: "disconnected" }));
       scheduleReconnect();
     };
@@ -1404,6 +1432,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
     applyPermissionsState,
     applySkillsStatus,
     applyThreadStateAndSnapshot,
+    completeBootstrap,
     handleEvent,
     hydrateCurrentThread,
     onError,
@@ -1425,6 +1454,8 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
 
     return () => {
       disposedRef.current = true;
+      isBootstrappingRef.current = false;
+      bufferedEventsRef.current = [];
       if (reconnectTimerRef.current) {
         clearTimeout(reconnectTimerRef.current);
       }

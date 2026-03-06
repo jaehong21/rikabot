@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  ArrowDown,
   ArrowUp,
   ChevronDown,
   ChevronRight,
@@ -183,6 +184,30 @@ function summarizeToolGroup(entries: ToolEntry[]): string {
   return `Ran ${total} tool call${total > 1 ? "s" : ""}`;
 }
 
+const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 24;
+const SHOW_SCROLL_BUTTON_THRESHOLD_PX = 240;
+
+function getScrollNode(container: HTMLDivElement | null): HTMLElement | null {
+  if (!container) {
+    return null;
+  }
+
+  const viewport = container.closest("[data-radix-scroll-area-viewport]");
+  return viewport instanceof HTMLElement ? viewport : container;
+}
+
+function isNearBottom(scrollNode: HTMLElement): boolean {
+  const distanceFromBottom =
+    scrollNode.scrollHeight - (scrollNode.scrollTop + scrollNode.clientHeight);
+  return distanceFromBottom <= AUTO_SCROLL_BOTTOM_THRESHOLD_PX;
+}
+
+function shouldShowScrollButton(scrollNode: HTMLElement): boolean {
+  const distanceFromBottom =
+    scrollNode.scrollHeight - (scrollNode.scrollTop + scrollNode.clientHeight);
+  return distanceFromBottom > SHOW_SCROLL_BUTTON_THRESHOLD_PX;
+}
+
 export function ChatPage() {
   const navigate = useNavigate();
   const search = useSearch({ from: "/" });
@@ -202,6 +227,8 @@ export function ChatPage() {
     useState(-1);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [loadingElapsedMs, setLoadingElapsedMs] = useState(0);
+  const [showScrollToBottomButton, setShowScrollToBottomButton] =
+    useState(false);
   const [openToolGroups, setOpenToolGroups] = useState<Record<string, boolean>>(
     {},
   );
@@ -209,18 +236,21 @@ export function ChatPage() {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const copyResetTimeoutRef = useRef<number | null>(null);
   const pendingQuerySessionSwitchRef = useRef<string | null>(null);
+  const autoScrollEnabledRef = useRef(true);
   const scrollStateRef = useRef<{
     initialized: boolean;
     sessionId: string | null;
     messageCount: number;
     toolCount: number;
     queuedCount: number;
+    assistantCharCount: number;
   }>({
     initialized: false,
     sessionId: null,
     messageCount: 0,
     toolCount: 0,
     queuedCount: 0,
+    assistantCharCount: 0,
   });
 
   const canSend =
@@ -317,6 +347,28 @@ export function ChatPage() {
   }, [navigate, search.session, state.currentSessionId, state.threads]);
 
   useEffect(() => {
+    const scrollNode = getScrollNode(transcriptRef.current);
+    if (!scrollNode) {
+      return;
+    }
+
+    const updateAutoScrollState = (): void => {
+      const nearBottom = isNearBottom(scrollNode);
+      autoScrollEnabledRef.current = nearBottom;
+      setShowScrollToBottomButton(shouldShowScrollButton(scrollNode));
+    };
+
+    updateAutoScrollState();
+    scrollNode.addEventListener("scroll", updateAutoScrollState, {
+      passive: true,
+    });
+
+    return () => {
+      scrollNode.removeEventListener("scroll", updateAutoScrollState);
+    };
+  }, [state.currentSessionId]);
+
+  useEffect(() => {
     const container = transcriptRef.current;
     if (!container) {
       return;
@@ -330,31 +382,54 @@ export function ChatPage() {
       (count, entry) => count + (entry.kind === "tool" ? 1 : 0),
       0,
     );
+    const assistantCharCount = state.entries.reduce((count, entry) => {
+      if (entry.kind !== "message" || entry.role !== "assistant") {
+        return count;
+      }
+      return count + entry.text.length;
+    }, 0);
     const queuedCount = state.queuedInputs.length;
     const previous = scrollStateRef.current;
     const sessionChanged = previous.sessionId !== state.currentSessionId;
-    const shouldSmoothScroll =
+    const streamContentAppended =
+      previous.initialized &&
+      !sessionChanged &&
+      state.isWaiting &&
+      assistantCharCount > previous.assistantCharCount;
+    const shouldFollowBottom =
       previous.initialized &&
       !sessionChanged &&
       (messageCount > previous.messageCount ||
         toolCount > previous.toolCount ||
-        queuedCount > previous.queuedCount);
+        queuedCount > previous.queuedCount ||
+        streamContentAppended);
     const shouldJumpToBottom = !previous.initialized || sessionChanged;
 
-    const viewport = container.closest("[data-radix-scroll-area-viewport]");
-    const scrollNode = viewport instanceof HTMLElement ? viewport : container;
+    const scrollNode = getScrollNode(container);
+    if (!scrollNode) {
+      return;
+    }
+
+    const nearBottom = isNearBottom(scrollNode);
+    if (nearBottom) {
+      autoScrollEnabledRef.current = true;
+    }
+    setShowScrollToBottomButton(shouldShowScrollButton(scrollNode));
 
     const frame = requestAnimationFrame(() => {
-      if (shouldSmoothScroll) {
-        scrollNode.scrollTo({
-          top: scrollNode.scrollHeight,
-          behavior: "smooth",
-        });
+      if (shouldJumpToBottom) {
+        scrollNode.scrollTop = scrollNode.scrollHeight;
+        autoScrollEnabledRef.current = true;
+        setShowScrollToBottomButton(false);
         return;
       }
 
-      if (shouldJumpToBottom) {
-        scrollNode.scrollTop = scrollNode.scrollHeight;
+      if (shouldFollowBottom && autoScrollEnabledRef.current) {
+        scrollNode.scrollTo({
+          top: scrollNode.scrollHeight,
+          behavior: streamContentAppended ? "auto" : "smooth",
+        });
+        setShowScrollToBottomButton(false);
       }
     });
     scrollStateRef.current = {
@@ -363,12 +438,18 @@ export function ChatPage() {
       messageCount,
       toolCount,
       queuedCount,
+      assistantCharCount,
     };
 
     return () => {
       cancelAnimationFrame(frame);
     };
-  }, [state.entries, state.currentSessionId, state.queuedInputs.length]);
+  }, [
+    state.entries,
+    state.currentSessionId,
+    state.isWaiting,
+    state.queuedInputs.length,
+  ]);
 
   useEffect(() => {
     const handleSlashFocus = (event: KeyboardEvent): void => {
@@ -500,12 +581,26 @@ export function ChatPage() {
     return groups;
   }, [state.entries]);
 
+  const scrollToBottom = (): void => {
+    const scrollNode = getScrollNode(transcriptRef.current);
+    if (!scrollNode) {
+      return;
+    }
+    autoScrollEnabledRef.current = true;
+    setShowScrollToBottomButton(false);
+    scrollNode.scrollTo({
+      top: scrollNode.scrollHeight,
+      behavior: "smooth",
+    });
+  };
+
   return (
     <div className="relative h-full min-h-0 bg-transparent">
       <ScrollArea className="h-full min-h-0">
         <div
           ref={transcriptRef}
-          className="scroll-soft h-full overflow-y-auto px-4 pb-44 pt-4 md:px-6"
+          data-testid="chat-transcript"
+          className="scroll-soft h-full px-4 pb-44 pt-4 md:px-6"
         >
           <div className="mx-auto w-full max-w-[760px] space-y-6">
             {groupedEntries.map((item) => {
@@ -550,14 +645,14 @@ export function ChatPage() {
                   );
                 }
 
+                const isStreamingAssistant =
+                  state.isWaiting && liveElapsedAssistantId === entry.id;
                 const persistedElapsedMs = entry.stats?.elapsedMs;
-                const liveElapsedMs =
-                  liveElapsedAssistantId === entry.id ? loadingElapsedMs : null;
                 const elapsedMs =
                   typeof persistedElapsedMs === "number" &&
                   persistedElapsedMs >= 0
                     ? persistedElapsedMs
-                    : liveElapsedMs;
+                    : null;
 
                 return (
                   <div key={entry.id} className="flex flex-col gap-1">
@@ -573,29 +668,31 @@ export function ChatPage() {
                         }}
                       />
                     </article>
-                    <div className="flex flex-col items-start gap-0.5">
-                      {typeof elapsedMs === "number" && (
-                        <p className="pl-0.5 text-[11px] tabular-nums text-muted-foreground/60">
-                          elapsed: {(elapsedMs / 1000).toFixed(2)} sec
-                        </p>
-                      )}
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        className="h-6 w-6 text-muted-foreground/60 transition-colors hover:text-foreground/90"
-                        onClick={() => {
-                          handleCopy(entry.id, entry.text);
-                        }}
-                        aria-label="Copy assistant response"
-                      >
-                        {copiedMessageId === entry.id ? (
-                          <Check className="h-3.5 w-3.5" />
-                        ) : (
-                          <Copy className="h-3.5 w-3.5" />
+                    {!isStreamingAssistant && (
+                      <div className="flex flex-col items-start gap-0.5">
+                        {typeof elapsedMs === "number" && (
+                          <p className="pl-0.5 text-[11px] tabular-nums text-muted-foreground/60">
+                            elapsed: {(elapsedMs / 1000).toFixed(2)} sec
+                          </p>
                         )}
-                      </Button>
-                    </div>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="h-6 w-6 text-muted-foreground/60 transition-colors hover:text-foreground/90"
+                          onClick={() => {
+                            handleCopy(entry.id, entry.text);
+                          }}
+                          aria-label="Copy assistant response"
+                        >
+                          {copiedMessageId === entry.id ? (
+                            <Check className="h-3.5 w-3.5" />
+                          ) : (
+                            <Copy className="h-3.5 w-3.5" />
+                          )}
+                        </Button>
+                      </div>
+                    )}
                   </div>
                 );
               }
@@ -817,6 +914,21 @@ export function ChatPage() {
           </div>
         </div>
       </ScrollArea>
+
+      {showScrollToBottomButton && !isEmpty && (
+        <div className="pointer-events-none absolute inset-x-0 bottom-36 z-30 flex justify-center px-4 md:px-6">
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            onClick={scrollToBottom}
+            aria-label="Scroll to bottom"
+            className="pointer-events-auto h-11 w-11 rounded-full border-border/70 bg-background/95 text-foreground shadow-[0_6px_20px_rgba(0,0,0,0.14)] backdrop-blur-sm transition-colors hover:bg-background"
+          >
+            <ArrowDown className="h-4 w-4" strokeWidth={1.5} />
+          </Button>
+        </div>
+      )}
 
       <footer
         className={cn(

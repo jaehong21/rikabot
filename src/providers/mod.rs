@@ -1,6 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
 
 pub mod openai;
 pub mod openrouter;
@@ -99,6 +100,29 @@ pub trait Provider: Send + Sync {
         model: &str,
         temperature: f64,
     ) -> Result<ChatResponse>;
+
+    /// Send a chat completion request with optional incremental text chunks.
+    ///
+    /// Providers that do not implement native streaming can rely on this
+    /// fallback, which emits the full final text as a single chunk.
+    async fn chat_with_chunks(
+        &self,
+        messages: &[ChatMessage],
+        tools: Option<&[ToolSpec]>,
+        model: &str,
+        temperature: f64,
+        chunk_tx: Option<mpsc::UnboundedSender<String>>,
+    ) -> Result<ChatResponse> {
+        let response = self.chat(messages, tools, model, temperature).await?;
+        if let Some(tx) = chunk_tx {
+            if let Some(text) = response.text.clone() {
+                if !text.is_empty() {
+                    let _ = tx.send(text);
+                }
+            }
+        }
+        Ok(response)
+    }
 }
 
 /// Create a provider instance from configuration.

@@ -18,6 +18,23 @@ function sendJson(res, statusCode, body) {
   res.end(payload);
 }
 
+async function sendSse(res, payloads, delayMs = 120) {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+  });
+  res.flushHeaders?.();
+
+  for (const payload of payloads) {
+    res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    await sleep(delayMs);
+  }
+
+  res.write("data: [DONE]\n\n");
+  res.end();
+}
+
 function parseBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -61,6 +78,56 @@ function extractToolOutput(messages) {
   return String(lastToolMessage.content ?? "");
 }
 
+function buildStreamPayloads({
+  id,
+  model,
+  chunks,
+  usage = { prompt_tokens: 8, completion_tokens: 8, total_tokens: 16 },
+}) {
+  const created = Math.floor(Date.now() / 1000);
+  const payloads = chunks.map((content) => ({
+    id,
+    object: "chat.completion.chunk",
+    created,
+    model,
+    choices: [
+      {
+        index: 0,
+        delta: { content },
+        finish_reason: null,
+      },
+    ],
+  }));
+
+  payloads.push({
+    id,
+    object: "chat.completion.chunk",
+    created,
+    model,
+    choices: [
+      {
+        index: 0,
+        delta: {},
+        finish_reason: "stop",
+      },
+    ],
+    usage,
+  });
+
+  return payloads;
+}
+
+function buildLongStreamChunks(prefix, lineCount) {
+  const chunks = [];
+  for (let i = 1; i <= lineCount; i += 1) {
+    chunks.push(
+      `${prefix} line ${i} detail detail detail detail detail detail\n\n`,
+    );
+  }
+  chunks.push(`${prefix} done`);
+  return chunks;
+}
+
 async function buildMockResponse(requestBody) {
   const messages = Array.isArray(requestBody?.messages)
     ? requestBody.messages
@@ -81,6 +148,43 @@ async function buildMockResponse(requestBody) {
     typeof requestBody?.model === "string" && requestBody.model.trim()
       ? requestBody.model
       : "mock-model";
+  const wantsStream = requestBody?.stream === true;
+
+  if (wantsStream && promptText.startsWith("e2e-stream-refresh:")) {
+    return {
+      statusCode: 200,
+      sseDelayMs: 180,
+      ssePayloads: buildStreamPayloads({
+        id: "chatcmpl-e2e-stream-refresh",
+        model,
+        chunks: buildLongStreamChunks("stream-refresh", 32),
+      }),
+    };
+  }
+
+  if (wantsStream && promptText.startsWith("e2e-stream-scroll:")) {
+    return {
+      statusCode: 200,
+      sseDelayMs: 50,
+      ssePayloads: buildStreamPayloads({
+        id: "chatcmpl-e2e-stream-scroll",
+        model,
+        chunks: buildLongStreamChunks("stream-scroll", 320),
+      }),
+    };
+  }
+
+  if (wantsStream && promptText.startsWith("e2e-stream-basic:")) {
+    return {
+      statusCode: 200,
+      sseDelayMs: 120,
+      ssePayloads: buildStreamPayloads({
+        id: "chatcmpl-e2e-stream-basic",
+        model,
+        chunks: ["stream-basic hello ", "from ", "mock server"],
+      }),
+    };
+  }
 
   if (promptText.startsWith("e2e-error-slow:")) {
     await sleep(1_200);
@@ -291,6 +395,10 @@ const server = http.createServer(async (req, res) => {
     try {
       const body = await parseBody(req);
       const response = await buildMockResponse(body);
+      if (Array.isArray(response.ssePayloads)) {
+        await sendSse(res, response.ssePayloads, response.sseDelayMs ?? 120);
+        return;
+      }
       sendJson(res, response.statusCode, response.body);
     } catch (error) {
       sendJson(res, 400, {

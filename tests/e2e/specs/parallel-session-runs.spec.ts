@@ -37,6 +37,30 @@ async function expectQueuedAfterLoadingIndicator(
   expect(isQueuedAfterLoading).toBe(true);
 }
 
+async function openFreshChat(page: Page): Promise<string> {
+  await page.goto("/");
+
+  const previousSessionId =
+    new URL(page.url()).searchParams.get("session") ?? "";
+  await Promise.all([
+    waitForApiResponse(page, "POST", "/api/threads"),
+    page.getByRole("button", { name: "New chat" }).first().click(),
+  ]);
+
+  let sessionId = "";
+  await expect
+    .poll(
+      () => {
+        sessionId = new URL(page.url()).searchParams.get("session") ?? "";
+        return sessionId.length > 0 && sessionId !== previousSessionId;
+      },
+      { timeout: 20_000 },
+    )
+    .toBeTruthy();
+
+  return sessionId;
+}
+
 test("runs sessions in parallel and keeps navigation plus slash commands active", async ({
   page,
 }) => {
@@ -271,10 +295,10 @@ test("keeps persisted user/error history across refresh after a failed run", asy
   await page.goto("/");
 
   await sendFromComposer(page, prompt);
-  await expect(page.getByText(prompt, { exact: true })).toBeVisible();
+  await expect(page.getByText(prompt, { exact: true }).first()).toBeVisible();
 
   await page.reload();
-  await expect(page.getByText(prompt, { exact: true })).toBeVisible();
+  await expect(page.getByText(prompt, { exact: true }).first()).toBeVisible();
   await expect(page.getByText("Error: OpenAI API error")).toBeVisible();
 });
 
@@ -296,7 +320,9 @@ test("reconnects after refresh mid-run and resyncs queued inputs", async ({
 
   await page.reload();
 
-  await expect(page.getByText(runningPrompt, { exact: true })).toBeVisible();
+  await expect(
+    page.getByText(runningPrompt, { exact: true }).first(),
+  ).toBeVisible();
   await expect(
     page.getByRole("button", { name: "Remove queued message" }).first(),
   ).toBeVisible();
@@ -306,6 +332,42 @@ test("reconnects after refresh mid-run and resyncs queued inputs", async ({
   await expect(
     page.getByRole("button", { name: "Remove queued message" }),
   ).toHaveCount(0);
+});
+
+test("keeps streamed responses usable after refresh in the same session", async ({
+  page,
+}) => {
+  const firstPrompt = `e2e-stream-basic:${Date.now()}`;
+  const secondPrompt = `e2e-stream-basic:${Date.now() + 1}`;
+  const sessionId = await openFreshChat(page);
+
+  await sendFromComposer(page, firstPrompt);
+  const loadingIndicator = page.getByLabel("Loading response");
+  await expect(loadingIndicator).toBeVisible();
+  await expect(
+    page.getByText("stream-basic hello from mock server"),
+  ).toBeVisible({
+    timeout: 25_000,
+  });
+  await expect(loadingIndicator).toHaveCount(0);
+
+  await page.reload();
+  await page.goto(`/?session=${encodeURIComponent(sessionId)}`);
+  await expect(page).toHaveURL(
+    new RegExp(`\\/\\?session=${encodeURIComponent(sessionId)}`),
+  );
+
+  await sendFromComposer(page, secondPrompt);
+  await expect(
+    page.getByText(secondPrompt, { exact: true }).first(),
+  ).toBeVisible();
+  await expect(loadingIndicator).toBeVisible();
+  await expect(
+    page.getByText("stream-basic hello from mock server"),
+  ).toBeVisible({
+    timeout: 25_000,
+  });
+  await expect(loadingIndicator).toHaveCount(0);
 });
 
 test("keeps chat session query-state across navigation, back/forward, and reload", async ({

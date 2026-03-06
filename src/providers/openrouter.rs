@@ -1,9 +1,11 @@
 use super::{ChatMessage, ChatResponse, Provider, TokenUsage, ToolCall, ToolSpec};
 use anyhow::Result;
 use async_trait::async_trait;
+use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
+use tokio::sync::mpsc;
 
 // ── Public provider struct ──────────────────────────────────────────────────
 
@@ -34,6 +36,8 @@ struct ApiChatRequest {
     model: String,
     messages: Vec<ApiMessage>,
     temperature: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<ApiToolSpec>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -110,6 +114,13 @@ struct ApiUsage {
     completion_tokens: Option<u32>,
     #[serde(default)]
     total_tokens: Option<u32>,
+}
+
+#[derive(Debug, Default)]
+struct StreamToolCallAccumulator {
+    id: Option<String>,
+    name: String,
+    arguments: String,
 }
 
 // ── Conversion helpers ──────────────────────────────────────────────────────
@@ -319,6 +330,147 @@ impl OpenRouterProvider {
             usage: token_usage,
         }
     }
+
+    fn merge_streamed_name(existing: &mut String, incoming: &str) {
+        if incoming.is_empty() {
+            return;
+        }
+
+        if existing.is_empty() {
+            *existing = incoming.to_string();
+            return;
+        }
+
+        if incoming.starts_with(existing.as_str()) {
+            *existing = incoming.to_string();
+            return;
+        }
+
+        if !existing.ends_with(incoming) {
+            existing.push_str(incoming);
+        }
+    }
+
+    fn parse_sse_payload(
+        payload: &str,
+        full_text: &mut String,
+        streamed_tool_calls: &mut Vec<StreamToolCallAccumulator>,
+        usage: &mut Option<ApiUsage>,
+        chunk_tx: Option<&mpsc::UnboundedSender<String>>,
+    ) {
+        let trimmed = payload.trim();
+        if trimmed.is_empty() || trimmed == "[DONE]" {
+            return;
+        }
+
+        let value = match serde_json::from_str::<serde_json::Value>(trimmed) {
+            Ok(value) => value,
+            Err(err) => {
+                tracing::debug!("ignoring malformed OpenRouter SSE payload: {}", err);
+                return;
+            }
+        };
+
+        if let Some(raw_usage) = value.get("usage") {
+            if let Ok(parsed_usage) = serde_json::from_value::<ApiUsage>(raw_usage.clone()) {
+                *usage = Some(parsed_usage);
+            }
+        }
+
+        let Some(choices) = value.get("choices").and_then(serde_json::Value::as_array) else {
+            return;
+        };
+
+        for choice in choices {
+            let Some(delta) = choice.get("delta").and_then(serde_json::Value::as_object) else {
+                continue;
+            };
+
+            if let Some(content) = delta.get("content").and_then(serde_json::Value::as_str) {
+                if !content.is_empty() {
+                    full_text.push_str(content);
+                    if let Some(tx) = chunk_tx {
+                        let _ = tx.send(content.to_string());
+                    }
+                }
+            }
+
+            let Some(tool_calls) = delta
+                .get("tool_calls")
+                .and_then(serde_json::Value::as_array)
+            else {
+                continue;
+            };
+
+            for tool_call_delta in tool_calls {
+                let Some(delta_obj) = tool_call_delta.as_object() else {
+                    continue;
+                };
+
+                let index = delta_obj
+                    .get("index")
+                    .and_then(serde_json::Value::as_u64)
+                    .and_then(|raw| usize::try_from(raw).ok())
+                    .unwrap_or(streamed_tool_calls.len());
+
+                while streamed_tool_calls.len() <= index {
+                    streamed_tool_calls.push(StreamToolCallAccumulator::default());
+                }
+
+                let acc = &mut streamed_tool_calls[index];
+
+                if let Some(id) = delta_obj.get("id").and_then(serde_json::Value::as_str) {
+                    if !id.is_empty() {
+                        acc.id = Some(id.to_string());
+                    }
+                }
+
+                if let Some(function) = delta_obj
+                    .get("function")
+                    .and_then(serde_json::Value::as_object)
+                {
+                    if let Some(name_piece) =
+                        function.get("name").and_then(serde_json::Value::as_str)
+                    {
+                        Self::merge_streamed_name(&mut acc.name, name_piece);
+                    }
+
+                    if let Some(arguments_piece) = function
+                        .get("arguments")
+                        .and_then(serde_json::Value::as_str)
+                    {
+                        acc.arguments.push_str(arguments_piece);
+                    }
+                }
+            }
+        }
+    }
+
+    fn streamed_tool_calls_to_response(
+        streamed_tool_calls: Vec<StreamToolCallAccumulator>,
+    ) -> Vec<ToolCall> {
+        streamed_tool_calls
+            .into_iter()
+            .filter(|entry| {
+                entry.id.is_some()
+                    || !entry.name.trim().is_empty()
+                    || !entry.arguments.trim().is_empty()
+            })
+            .map(|entry| ToolCall {
+                id: entry.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+                name: if entry.name.trim().is_empty() {
+                    "unknown_tool".to_string()
+                } else {
+                    entry.name
+                },
+                arguments: if entry.arguments.trim().is_empty() {
+                    "{}".to_string()
+                } else {
+                    entry.arguments
+                },
+            })
+            .collect()
+    }
 }
 
 // ── Provider trait implementation ───────────────────────────────────────────
@@ -343,6 +495,7 @@ impl Provider for OpenRouterProvider {
             model: model.to_string(),
             messages: api_messages,
             temperature,
+            stream: None,
             tool_choice: api_tools.as_ref().map(|_| "auto".to_string()),
             tools: api_tools,
         };
@@ -376,6 +529,148 @@ impl Provider for OpenRouterProvider {
 
         Ok(Self::parse_response(choice.message, api_response.usage))
     }
+
+    async fn chat_with_chunks(
+        &self,
+        messages: &[ChatMessage],
+        tools: Option<&[ToolSpec]>,
+        model: &str,
+        temperature: f64,
+        chunk_tx: Option<mpsc::UnboundedSender<String>>,
+    ) -> Result<ChatResponse> {
+        let api_tools = Self::convert_tools(tools);
+        let api_messages = Self::convert_messages(messages);
+
+        let request = ApiChatRequest {
+            model: model.to_string(),
+            messages: api_messages,
+            temperature,
+            stream: Some(true),
+            tool_choice: api_tools.as_ref().map(|_| "auto".to_string()),
+            tools: api_tools,
+        };
+
+        let response = self
+            .client
+            .post("https://openrouter.ai/api/v1/chat/completions")
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("HTTP-Referer", "https://github.com/jaehong21/rikabot")
+            .header("X-Title", "Rikabot")
+            .header("Accept", "text/event-stream")
+            .json(&request)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "<failed to read body>".to_string());
+            anyhow::bail!("OpenRouter API error ({}): {}", status, body);
+        }
+
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+
+        if !content_type.starts_with("text/event-stream") {
+            let api_response: ApiChatResponse = response.json().await?;
+            let choice = api_response
+                .choices
+                .into_iter()
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("No choices returned from OpenRouter"))?;
+            let parsed = Self::parse_response(choice.message, api_response.usage);
+            if let Some(tx) = chunk_tx {
+                if let Some(text) = parsed.text.clone() {
+                    if !text.is_empty() {
+                        let _ = tx.send(text);
+                    }
+                }
+            }
+            return Ok(parsed);
+        }
+
+        let mut stream = response.bytes_stream();
+        let mut line_buffer = String::new();
+        let mut data_lines: Vec<String> = Vec::new();
+        let mut full_text = String::new();
+        let mut streamed_tool_calls: Vec<StreamToolCallAccumulator> = Vec::new();
+        let mut usage: Option<ApiUsage> = None;
+
+        while let Some(chunk_result) = stream.next().await {
+            let bytes = chunk_result?;
+            let decoded = String::from_utf8_lossy(&bytes);
+            line_buffer.push_str(&decoded);
+
+            while let Some(newline_idx) = line_buffer.find('\n') {
+                let mut line = line_buffer[..newline_idx].to_string();
+                line_buffer.drain(..=newline_idx);
+
+                if line.ends_with('\r') {
+                    line.pop();
+                }
+
+                if line.is_empty() {
+                    if !data_lines.is_empty() {
+                        let payload = data_lines.join("\n");
+                        Self::parse_sse_payload(
+                            &payload,
+                            &mut full_text,
+                            &mut streamed_tool_calls,
+                            &mut usage,
+                            chunk_tx.as_ref(),
+                        );
+                        data_lines.clear();
+                    }
+                    continue;
+                }
+
+                if let Some(data) = line.strip_prefix("data:") {
+                    data_lines.push(data.trim_start().to_string());
+                }
+            }
+        }
+
+        if !line_buffer.is_empty() {
+            let mut trailing = line_buffer;
+            if trailing.ends_with('\r') {
+                trailing.pop();
+            }
+            if let Some(data) = trailing.strip_prefix("data:") {
+                data_lines.push(data.trim_start().to_string());
+            }
+        }
+
+        if !data_lines.is_empty() {
+            let payload = data_lines.join("\n");
+            Self::parse_sse_payload(
+                &payload,
+                &mut full_text,
+                &mut streamed_tool_calls,
+                &mut usage,
+                chunk_tx.as_ref(),
+            );
+        }
+
+        Ok(ChatResponse {
+            text: if full_text.is_empty() {
+                None
+            } else {
+                Some(full_text)
+            },
+            tool_calls: Self::streamed_tool_calls_to_response(streamed_tool_calls),
+            usage: usage.map(|u| TokenUsage {
+                prompt_tokens: u.prompt_tokens.unwrap_or(0),
+                completion_tokens: u.completion_tokens.unwrap_or(0),
+                total_tokens: u.total_tokens.unwrap_or(0),
+            }),
+        })
+    }
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -383,6 +678,7 @@ impl Provider for OpenRouterProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::sync::mpsc;
 
     #[test]
     fn provider_supports_native_tools() {
@@ -655,6 +951,7 @@ mod tests {
                 tool_calls: None,
             }],
             temperature: 0.7,
+            stream: None,
             tools: None,
             tool_choice: None,
         };
@@ -663,6 +960,7 @@ mod tests {
         assert!(json.contains("anthropic/claude-sonnet-4"));
         assert!(json.contains("\"role\":\"user\""));
         assert!(json.contains("\"temperature\":0.7"));
+        assert!(!json.contains("\"stream\""));
         // tools and tool_choice should be omitted when None
         assert!(!json.contains("\"tools\""));
         assert!(!json.contains("\"tool_choice\""));
@@ -679,6 +977,7 @@ mod tests {
                 tool_calls: None,
             }],
             temperature: 0.1,
+            stream: None,
             tools: Some(vec![ApiToolSpec {
                 kind: "function".to_string(),
                 function: ApiToolFunction {
@@ -695,6 +994,26 @@ mod tests {
         assert!(json.contains("\"tool_choice\":\"auto\""));
         assert!(json.contains("\"type\":\"function\""));
         assert!(json.contains("\"name\":\"shell\""));
+    }
+
+    #[test]
+    fn api_chat_request_serializes_stream_true() {
+        let request = ApiChatRequest {
+            model: "openai/gpt-4o".to_string(),
+            messages: vec![ApiMessage {
+                role: "user".to_string(),
+                content: Some("hello".to_string()),
+                tool_call_id: None,
+                tool_calls: None,
+            }],
+            temperature: 0.0,
+            stream: Some(true),
+            tools: None,
+            tool_choice: None,
+        };
+
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains("\"stream\":true"));
     }
 
     #[test]
@@ -747,5 +1066,92 @@ mod tests {
         let json = r#"{"choices":[]}"#;
         let response: ApiChatResponse = serde_json::from_str(json).unwrap();
         assert!(response.choices.is_empty());
+    }
+
+    #[test]
+    fn parse_sse_payload_streams_text_and_usage() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        let mut full_text = String::new();
+        let mut tool_calls = Vec::<StreamToolCallAccumulator>::new();
+        let mut usage = None;
+
+        OpenRouterProvider::parse_sse_payload(
+            r#"{"choices":[{"delta":{"content":"open "}}],"usage":{"prompt_tokens":4,"completion_tokens":3,"total_tokens":7}}"#,
+            &mut full_text,
+            &mut tool_calls,
+            &mut usage,
+            Some(&tx),
+        );
+        OpenRouterProvider::parse_sse_payload(
+            r#"{"choices":[{"delta":{"content":"router"}}]}"#,
+            &mut full_text,
+            &mut tool_calls,
+            &mut usage,
+            Some(&tx),
+        );
+
+        assert_eq!(full_text, "open router");
+        assert_eq!(rx.try_recv().ok().as_deref(), Some("open "));
+        assert_eq!(rx.try_recv().ok().as_deref(), Some("router"));
+        assert!(rx.try_recv().is_err());
+
+        let parsed_usage = usage.expect("usage should be parsed");
+        assert_eq!(parsed_usage.prompt_tokens, Some(4));
+        assert_eq!(parsed_usage.completion_tokens, Some(3));
+        assert_eq!(parsed_usage.total_tokens, Some(7));
+    }
+
+    #[test]
+    fn parse_sse_payload_accumulates_tool_call_deltas() {
+        let mut full_text = String::new();
+        let mut tool_calls = Vec::<StreamToolCallAccumulator>::new();
+        let mut usage = None;
+
+        OpenRouterProvider::parse_sse_payload(
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_or","function":{"name":"shell","arguments":"{\"command\":\"printf"}}]}}]}"#,
+            &mut full_text,
+            &mut tool_calls,
+            &mut usage,
+            None,
+        );
+        OpenRouterProvider::parse_sse_payload(
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":" done\"}"}}]}}]}"#,
+            &mut full_text,
+            &mut tool_calls,
+            &mut usage,
+            None,
+        );
+
+        let converted = OpenRouterProvider::streamed_tool_calls_to_response(tool_calls);
+        assert_eq!(converted.len(), 1);
+        assert_eq!(converted[0].id, "call_or");
+        assert_eq!(converted[0].name, "shell");
+        assert_eq!(converted[0].arguments, "{\"command\":\"printf done\"}");
+    }
+
+    #[test]
+    fn parse_sse_payload_ignores_malformed_and_done_lines() {
+        let mut full_text = String::new();
+        let mut tool_calls = Vec::<StreamToolCallAccumulator>::new();
+        let mut usage = None;
+
+        OpenRouterProvider::parse_sse_payload(
+            "not-json",
+            &mut full_text,
+            &mut tool_calls,
+            &mut usage,
+            None,
+        );
+        OpenRouterProvider::parse_sse_payload(
+            "[DONE]",
+            &mut full_text,
+            &mut tool_calls,
+            &mut usage,
+            None,
+        );
+
+        assert!(full_text.is_empty());
+        assert!(tool_calls.is_empty());
+        assert!(usage.is_none());
     }
 }

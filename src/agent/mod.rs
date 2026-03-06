@@ -180,12 +180,31 @@ impl Agent {
             messages.push(ChatMessage::system(system_prompt));
             messages.extend(history.iter().cloned());
 
-            // Call LLM
-            let response: ChatResponse = match self
+            // Call LLM and forward provider chunk stream to runtime events.
+            let (chunk_tx, mut chunk_rx) = mpsc::unbounded_channel::<String>();
+            let event_tx = tx.clone();
+            let chunk_forward_task = tokio::spawn(async move {
+                while let Some(chunk) = chunk_rx.recv().await {
+                    if chunk.is_empty() {
+                        continue;
+                    }
+                    let _ = event_tx.send(AgentEvent::Chunk { content: chunk });
+                }
+            });
+
+            let response_result = self
                 .provider
-                .chat(&messages, Some(tool_specs), &self.model, self.temperature)
-                .await
-            {
+                .chat_with_chunks(
+                    &messages,
+                    Some(tool_specs),
+                    &self.model,
+                    self.temperature,
+                    Some(chunk_tx),
+                )
+                .await;
+            let _ = chunk_forward_task.await;
+
+            let response: ChatResponse = match response_result {
                 Ok(r) => r,
                 Err(e) => {
                     let _ = tx.send(AgentEvent::Error {
@@ -228,15 +247,6 @@ impl Agent {
             }
 
             // ── Has tool calls => process them ──────────────────────────
-
-            // If there is text alongside tool calls, send it as a chunk
-            if let Some(ref text) = response.text {
-                if !text.is_empty() {
-                    let _ = tx.send(AgentEvent::Chunk {
-                        content: text.clone(),
-                    });
-                }
-            }
 
             // Encode tool calls into assistant message content (zeroclaw pattern).
             // The assistant message stores structured JSON so the conversation
